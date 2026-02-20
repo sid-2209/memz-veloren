@@ -1,0 +1,6 @@
+root   ::= "{" ws "\"title\"" ws ":" ws string "," ws "\"verses\"" ws ":" ws string-array "," ws "\"performance_note\"" ws ":" ws string "}" ws
+
+string       ::= "\"" ([^"\\] | "\\" .)* "\""
+string-array ::= "[" ws string (ws "," ws string)* ws "]"
+number       ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]{1,2})?
+ws           ::= [ \t\n]*

@@ -1,0 +1,4 @@
+root   ::= "{" ws "\"gossip\"" ws ":" ws string "," ws "\"exaggeration_level\"" ws ":" ws number "," ws "\"withheld\"" ws ":" ws string "}" ws
+string ::= "\"" ([^"\\] | "\\" .)* "\""
+number ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]{1,2})?
+ws     ::= [ \t\n]*

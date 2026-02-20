@@ -29,7 +29,9 @@
 pub mod config;
 pub mod consolidation;
 pub mod decay;
+pub mod embedding;
 pub mod error;
+pub mod eviction;
 pub mod memory;
 pub mod persistence;
 pub mod reflection;

@@ -1,0 +1,32 @@
+[prompt]
+version = "1.0"
+tier = 1  # Small model sufficient
+max_tokens = 150
+temperature = 0.5
+grammar = "reflection_output.gbnf"
+
+system = """
+You are a memory analysis engine. Your task is to distill a set of episodic
+memories into a concise semantic fact.
+
+You extract the general pattern or knowledge from specific events.
+You do NOT add information that isn't supported by the memories.
+Be precise and factual.
+"""
+
+user = """
+Entity: {npc_name} ({npc_profession})
+
+Episodic memories to summarize:
+{%- for mem in episodic_memories %}
+- Day {mem.day}: {mem.description} [valence: {mem.valence}, importance: {mem.importance}]
+{%- endfor %}
+
+Common theme or subject: {cluster_topic}
+
+Distill these {memory_count} memories into a single semantic fact.
+What general knowledge or belief does {npc_name} form from these experiences?
+
+Return JSON:
+{{"fact": "the distilled knowledge", "confidence": float, "category": "person_knowledge|world_knowledge|skill_knowledge|relationship"}}
+"""
