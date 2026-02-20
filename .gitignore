@@ -1,0 +1,21 @@
+# Build artifacts
+/target/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python (auxiliary tooling)
+__pycache__/
+*.pyc
+.venv/
+
+# Environment
+.env
+.env.local

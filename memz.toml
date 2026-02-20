@@ -1,0 +1,106 @@
+# MEMZ Configuration — v2.0
+# This file controls all aspects of the NPC memory system.
+# Hot-reloadable: changes take effect without restart (except [hardware]).
+
+[general]
+enabled = true
+log_level = "info"                    # trace, debug, info, warn, error
+profile = "auto"                      # auto-detect hardware tier, or: "minimal", "standard", "high", "server", "dev"
+
+[memory]
+max_episodic_per_npc = 200            # Hard cap on episodic memories per NPC
+max_semantic_per_npc = 50             # Distilled knowledge cap
+max_social_per_npc = 100              # Gossip / hearsay cap
+max_procedural_per_npc = 30           # Skills and routines cap
+max_reflective_per_npc = 20           # Deep thoughts cap
+decay_rate = 0.05                     # Base Ebbinghaus decay constant (per game-day)
+consolidation_interval_days = 1       # How often memory consolidation runs (game-days)
+consolidation_budget_ms = 0.1         # Max milliseconds per NPC per consolidation cycle
+
+[memory.eviction]
+hot_ring_hours = 24                   # In-memory: last 24 game-hours
+warm_ring_days = 7                    # In-memory: last 7 game-days
+cold_ring_days = 90                   # SQLite: last 90 game-days
+protect_emotional_threshold = 0.8     # Memories with |valence| > this are never evicted
+protect_first_meeting = true          # First-encounter memories are permanent
+
+[retrieval]
+algorithm = "hnsw"                    # "hnsw" (default), "brute_force" (debug), "tfidf" (fallback)
+top_k = 5                             # Number of memories retrieved per interaction
+embedding_model = "all-MiniLM-L6-v2"  # ONNX model for semantic embeddings
+embedding_dimensions = 384
+hnsw_ef_construction = 128            # HNSW build quality (higher = better, slower build)
+hnsw_ef_search = 64                   # HNSW search quality (higher = better recall, slower query)
+hnsw_m = 16                           # HNSW connections per node
+
+[retrieval.weights]
+recency = 0.20
+relevance = 0.30
+importance = 0.20
+emotional = 0.20
+social = 0.10
+
+[llm]
+provider = "ollama"                   # "ollama", "openai", "llama_cpp", "none"
+base_url = "http://localhost:11434"   # Ollama default
+tier1_model = "qwen2.5:1.5b"         # Small, fast, local
+tier2_model = "mistral:7b-instruct"  # Large, deep reasoning
+max_tier2_calls_per_hour = 20        # Cost/performance cap
+request_timeout_ms = 5000            # Hard timeout for any LLM call
+structured_output = true             # Enforce GBNF/JSON mode on all calls
+retry_on_parse_failure = true        # Auto-retry with simplified prompt
+max_retries = 2
+
+[llm.fallback]
+# What to do when LLM is unavailable
+tier2_fallback = "tier1"             # Downgrade to smaller model
+tier1_fallback = "templates"         # Use rule-based templates
+templates_fallback = "silent"        # NPC uses body language only
+
+[social]
+gossip_tendency_default = 0.5         # 0.0 = secretive, 1.0 = town crier
+gossip_propagation_speed = 1.0        # 1.0 = normal, 5.0 = starter area boost
+trust_decay_rate = 0.01               # Trust erodes slowly without reinforcement
+max_gossip_chain_depth = 4            # Info degrades after 4 hops (telephone game)
+
+[first_five_minutes]
+# Special tuning for the new player experience (§14.0)
+enabled = true
+starter_area_gossip_speed_multiplier = 5.0  # Gossip spreads 5x faster near spawn
+recency_weight_boost_duration_hours = 1.0   # Boost recency weight for first hour
+fuzzy_seed_npc_enabled = true               # Pre-seeded "I think I've seen you" NPC
+guaranteed_recognition_on_second_visit = true
+
+[performance]
+frame_budget_ms = 2.0                 # Hard limit: MEMZ total per frame
+memory_creation_budget_us = 10        # Max microseconds per memory creation
+retrieval_budget_us = 500             # Max microseconds per retrieval query
+active_npc_radius_chunks = 3          # Only process NPCs within this radius
+max_concurrent_llm_requests = 2       # Prevent LLM queue flooding
+
+[persistence]
+backend = "sqlite"                    # "sqlite" (default), "json" (debug)
+wal_mode = true                       # SQLite WAL for concurrent reads
+auto_save_interval_seconds = 300      # Save every 5 minutes
+backup_count = 3                      # Keep last 3 save backups
+checksum_enabled = true               # Detect save corruption
+
+[safety]
+content_filter_enabled = true         # Filter player memory injections
+injection_rate_limit_per_minute = 5   # Max injection attempts per minute
+max_injection_length_chars = 500      # Prevent prompt stuffing
+profanity_filter = "moderate"         # "off", "moderate", "strict"
+log_moderation_events = true          # Audit trail for moderation
+
+[accessibility]
+screen_reader_support = true
+high_contrast_ui = false
+reduce_motion = false
+text_size_multiplier = 1.0            # 1.0 = default, 1.5 = large, 2.0 = extra large
+memory_journal_keyboard_only = true   # Full keyboard navigation
+
+[telemetry]
+enabled = false                       # Opt-in only
+prometheus_endpoint = "127.0.0.1:9090"
+export_tracy = true                   # Tracy profiler integration
+log_slow_operations_ms = 5.0          # Log any operation exceeding this

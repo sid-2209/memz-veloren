@@ -1,0 +1,15 @@
+[package]
+name = "memz-llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "LLM abstraction layer for MEMZ — Ollama, OpenAI, llama.cpp"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = "1.0"
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }
