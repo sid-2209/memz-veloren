@@ -38,6 +38,7 @@ pub mod eviction;
 pub mod first_five;
 pub mod injection;
 pub mod memory;
+pub mod metrics;
 pub mod observation;
 pub mod persistence;
 pub mod reflection;
