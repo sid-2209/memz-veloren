@@ -31,6 +31,7 @@ pub mod consolidation;
 pub mod decay;
 pub mod error;
 pub mod memory;
+pub mod persistence;
 pub mod reflection;
 pub mod retrieval;
 pub mod safety;
