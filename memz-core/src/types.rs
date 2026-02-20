@@ -64,6 +64,20 @@ impl fmt::Display for EntityId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SettlementId(pub Uuid);
 
+impl SettlementId {
+    /// Generate a new random settlement ID.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for SettlementId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Spatial
 // ---------------------------------------------------------------------------

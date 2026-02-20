@@ -23,8 +23,10 @@
 pub mod client;
 pub mod error;
 pub mod prompt;
+pub mod queue;
 pub mod types;
 
 pub use client::LlmClient;
 pub use error::LlmError;
+pub use queue::LlmQueue;
 pub use types::{LlmRequest, LlmResponse, LlmTier};

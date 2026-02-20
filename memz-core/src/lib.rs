@@ -26,15 +26,23 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod bard;
+pub mod behavior;
 pub mod config;
+pub mod conflict;
 pub mod consolidation;
 pub mod decay;
 pub mod embedding;
 pub mod error;
 pub mod eviction;
+pub mod first_five;
+pub mod injection;
 pub mod memory;
+pub mod observation;
 pub mod persistence;
 pub mod reflection;
+pub mod replay;
+pub mod reputation;
 pub mod retrieval;
 pub mod safety;
 pub mod social;

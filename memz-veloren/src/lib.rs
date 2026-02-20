@@ -32,7 +32,11 @@
 //! - `events` — Game event types that trigger memory creation
 //! - `hooks` — Integration points with Veloren's existing systems
 
+pub mod bridge;
 pub mod components;
+pub mod config;
+pub mod dialogue;
 pub mod events;
 pub mod hooks;
+pub mod memory_rule;
 pub mod systems;

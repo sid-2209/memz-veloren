@@ -967,6 +967,7 @@ dependencies = [
 name = "memz-llm"
 version = "0.1.0"
 dependencies = [
+ "parking_lot",
  "reqwest",
  "serde",
  "serde_json",
