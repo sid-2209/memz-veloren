@@ -166,45 +166,144 @@ impl EmbeddingProvider for RandomEmbeddingProvider {
 }
 
 // ---------------------------------------------------------------------------
-// ONNX provider placeholder
+// ONNX-based embedding provider (feature-gated)
 // ---------------------------------------------------------------------------
 
-/// Placeholder for the production ONNX-based embedding provider.
+/// Production ONNX-based embedding provider using `fastembed-rs`.
 ///
-/// This will use `fastembed-rs` or `ort` (ONNX Runtime for Rust) to
-/// load `all-MiniLM-L6-v2` (~80 MB) and generate 384-dimensional
-/// embeddings.
+/// Uses the `all-MiniLM-L6-v2` model (~80 MB) to generate 384-dimensional
+/// embeddings suitable for semantic retrieval.
 ///
-/// # Implementation plan (Phase 1)
+/// # Feature gate
 ///
-/// ```ignore
-/// use fastembed::{TextEmbedding, InitOptions, EmbeddingModel};
+/// This provider is only available when the `onnx` cargo feature is enabled:
 ///
-/// let model = TextEmbedding::try_new(InitOptions {
-///     model_name: EmbeddingModel::AllMiniLML6V2,
-///     show_download_progress: true,
-///     ..Default::default()
-/// })?;
-///
-/// let embeddings = model.embed(vec!["Hello, world!"], None)?;
+/// ```toml
+/// memz-core = { path = "../memz-core", features = ["onnx"] }
 /// ```
 ///
-/// For now, this struct exists to document the intended production path.
-/// Add `fastembed = "4"` to `[dependencies]` in Phase 1 and implement.
+/// # Example (when feature enabled)
+///
+/// ```ignore
+/// use memz_core::embedding::{OnnxEmbeddingProvider, EmbeddingProvider};
+///
+/// let provider = OnnxEmbeddingProvider::new(None)?;
+/// let emb = provider.embed("The trader sold rare gems")?;
+/// assert_eq!(emb.0.len(), 384);
+/// ```
+#[cfg(feature = "onnx")]
+pub struct OnnxEmbeddingProvider {
+    model: fastembed::TextEmbedding,
+    dims: usize,
+    model_name_str: String,
+}
+
+#[cfg(feature = "onnx")]
+impl OnnxEmbeddingProvider {
+    /// Create a new ONNX embedding provider.
+    ///
+    /// If `model` is `None`, defaults to `AllMiniLML6V2` (384-dim).
+    ///
+    /// The model weights are downloaded on first use and cached in a
+    /// platform-specific cache directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemzError::Config`] if the ONNX model cannot be loaded.
+    pub fn new(model: Option<fastembed::EmbeddingModel>) -> Result<Self> {
+        let model_enum = model.unwrap_or(fastembed::EmbeddingModel::AllMiniLML6V2);
+        let model_name_str = format!("{model_enum:?}");
+
+        let init_options = fastembed::InitOptions::new(model_enum)
+            .with_show_download_progress(true);
+
+        let text_embedding = fastembed::TextEmbedding::try_new(init_options)
+            .map_err(|e| MemzError::Config(format!("Failed to load ONNX model: {e}")))?;
+
+        // Probe dimensionality with a test embedding
+        let probe = text_embedding
+            .embed(vec!["probe"], None)
+            .map_err(|e| MemzError::Config(format!("Probe embedding failed: {e}")))?;
+
+        let dims = probe
+            .first()
+            .map(|v| v.len())
+            .unwrap_or(384);
+
+        Ok(Self {
+            model: text_embedding,
+            dims,
+            model_name_str,
+        })
+    }
+}
+
+#[cfg(feature = "onnx")]
+impl EmbeddingProvider for OnnxEmbeddingProvider {
+    fn embed(&self, text: &str) -> Result<Embedding> {
+        let results = self
+            .model
+            .embed(vec![text], None)
+            .map_err(|e| MemzError::Serialization(format!("ONNX embed failed: {e}")))?;
+
+        results
+            .into_iter()
+            .next()
+            .map(Embedding)
+            .ok_or_else(|| MemzError::Serialization("ONNX returned empty result".to_string()))
+    }
+
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Embedding>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let owned: Vec<String> = texts.iter().map(|s| (*s).to_string());
+        let results = self
+            .model
+            .embed(owned.collect(), None)
+            .map_err(|e| MemzError::Serialization(format!("ONNX batch embed failed: {e}")))?;
+
+        Ok(results.into_iter().map(Embedding).collect())
+    }
+
+    fn dimensions(&self) -> usize {
+        self.dims
+    }
+
+    fn model_name(&self) -> &str {
+        &self.model_name_str
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stub ONNX provider (when feature not enabled)
+// ---------------------------------------------------------------------------
+
+/// Placeholder for the ONNX-based embedding provider.
+///
+/// Enable the `onnx` feature to use the real implementation:
+///
+/// ```toml
+/// memz-core = { path = "../memz-core", features = ["onnx"] }
+/// ```
+#[cfg(not(feature = "onnx"))]
 pub struct OnnxEmbeddingProvider {
     _private: (),
 }
 
+#[cfg(not(feature = "onnx"))]
 impl OnnxEmbeddingProvider {
     /// Create a new ONNX embedding provider.
     ///
     /// # Errors
     ///
-    /// Returns an error if the ONNX model cannot be loaded.
+    /// Always returns an error when the `onnx` feature is not enabled.
     pub fn new(_model_path: &str) -> Result<Self> {
         Err(MemzError::Config(
-            "ONNX embedding provider not yet implemented — use StubEmbeddingProvider or \
-             RandomEmbeddingProvider for now"
+            "ONNX embedding provider requires the `onnx` feature — \
+             compile with `cargo build --features onnx`, or use \
+             StubEmbeddingProvider / RandomEmbeddingProvider"
                 .to_string(),
         ))
     }

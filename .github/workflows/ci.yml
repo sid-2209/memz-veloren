@@ -1,4 +1,4 @@
-name: CI
+name: MEMZ CI
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  RUSTFLAGS: "-D warnings"
 
 jobs:
   check:
@@ -16,36 +17,41 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets
+      - run: cargo check --workspace --all-targets
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    needs: check
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all
+      - name: Unit & integration tests
+        run: cargo test --workspace -- --test-threads=4
+      - name: Property-based tests (extended)
+        run: cargo test -p memz-core --test proptest_memory -- --test-threads=2
 
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    needs: check
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   fmt:
     name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -53,22 +59,44 @@ jobs:
   doc:
     name: Documentation
     runs-on: ubuntu-latest
+    needs: check
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --no-deps --all
+      - run: cargo doc --no-deps --workspace
         env:
           RUSTDOCFLAGS: -D warnings
 
   bench:
     name: Benchmarks
     runs-on: ubuntu-latest
+    needs: check
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-      - run: cargo bench --bench memory_system -- --output-format=bencher
+      - name: Compile benchmarks
+        run: cargo bench -p memz-bench --no-run
+      - name: Run benchmarks
+        run: cargo bench -p memz-bench -- --output-format=bencher | tee bench-output.txt
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: benchmark-results
+          path: bench-output.txt
+
+  budget-check:
+    name: Performance Budget
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Storage budget assertion
+        run: cargo test -p memz-core --test integration -- memory_storage_size_within_budget
 
   audit:
     name: Security Audit
@@ -78,3 +106,4 @@ jobs:
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+

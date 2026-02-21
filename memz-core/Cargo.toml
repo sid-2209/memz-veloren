@@ -22,6 +22,14 @@ ordered-float = { workspace = true }
 rand = { workspace = true }
 parking_lot = { workspace = true }
 lru = { workspace = true }
+instant-distance = "0.6"
+
+# Optional: real ONNX-based embedding provider
+fastembed = { version = "4", optional = true }
+
+[features]
+default = []
+onnx = ["dep:fastembed"]
 
 [dev-dependencies]
 proptest = { workspace = true }

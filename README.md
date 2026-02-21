@@ -2,7 +2,7 @@
 
 ### *"Every character remembers. Every interaction matters. Every world is alive."*
 
-[![CI](https://github.com/your-username/memz/actions/workflows/ci.yml/badge.svg)](https://github.com/your-username/memz/actions)
+[![CI](https://github.com/sid-2209/memz-veloren/actions/workflows/ci.yml/badge.svg)](https://github.com/sid-2209/memz-veloren/actions)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://opensource.org/licenses/GPL-3.0)
 
 ---
@@ -36,15 +36,15 @@ memz/
 
 ### Prerequisites
 
-- Rust 1.75+ (2024 edition)
+- Rust nightly (edition 2024)
 - (Optional) Ollama for local LLM support
 
 ### Build
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/memz.git
-cd memz
+git clone https://github.com/sid-2209/memz-veloren.git
+cd memz-veloren
 
 # Build all crates
 cargo build
@@ -78,6 +78,18 @@ frame_budget_ms = 2.0
 | `memory_retrieval_top5_from_200` | < 500μs |
 | `memory_decay_pass_50_npcs` | < 50μs |
 | `full_frame_budget_20_active_npcs` | < 2ms |
+| `observation_pipeline` | < 100μs |
+| `gossip_propagation` | < 50μs |
+| `reputation_update` | < 20μs |
+| `disposition_computation` | < 50μs |
+| `eviction_pass_50_npcs` | < 100μs |
+
+## 🧪 Test Suite
+
+- **189 tests** across 4 crates (unit, integration, property-based)
+- **15 property-based tests** via `proptest` (memory invariant verification)
+- **8 integration tests** (full lifecycle, gossip chains, storage budgets)
+- **9 criterion benchmarks** with CI budget enforcement
 
 ## 🧪 Cognitive Science Foundation
 

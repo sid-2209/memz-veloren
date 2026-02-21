@@ -36,6 +36,7 @@ pub mod embedding;
 pub mod error;
 pub mod eviction;
 pub mod first_five;
+pub mod hnsw;
 pub mod injection;
 pub mod memory;
 pub mod metrics;

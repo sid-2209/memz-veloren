@@ -39,4 +39,5 @@ pub mod dialogue;
 pub mod events;
 pub mod hooks;
 pub mod memory_rule;
+pub mod rtsim_adapter;
 pub mod systems;
