@@ -7,7 +7,7 @@
 **Project Codename:** MEMZ  
 **Author:** Siddhartha  
 **Date:** 20 February 2026  
-**Version:** 3.0 — Production-Ready Edition  
+**Version:** 3.1 — Integration-Ready Edition  
 **Classification:** Production-Grade Design Specification  
 **Virality Target:** 🔥 Open-source sensation — top of Hacker News, r/gaming, r/gamedev, r/artificial, YouTube creators, Twitch streamers
 
@@ -70,6 +70,15 @@
 22. [Accessibility & Inclusivity](#22-accessibility--inclusivity)
 23. [Observability, Telemetry & Debugging](#23-observability-telemetry--debugging)
 24. [Appendix — Research References](#24-appendix--research-references)
+25. [End-to-End Veloren Integration Plan](#25-end-to-end-veloren-integration-plan) *(NEW — v3.1)*
+   - 25.1 Current Implementation Status
+   - 25.2 Veloren Architecture Analysis
+   - 25.3 Integration Architecture — The Bridge
+   - 25.4 Step-by-Step Integration Playbook
+   - 25.5 Veloren Source Modifications (Complete Diff Guide)
+   - 25.6 Build & Run Instructions
+   - 25.7 Integration Test Plan
+   - 25.8 Known Gaps & TODO Items
 
 ---
 
@@ -2326,6 +2335,556 @@ MEMZ Server Metrics (Prometheus-compatible):
 
 ---
 
+## 25. End-to-End Veloren Integration Plan
+
+> **Goal:** Play the Veloren game on a local machine (or web via WASM) with MEMZ memory fully integrated — NPCs remember interactions, gossip spreads, greetings change, prices adjust, reputation tracks. A complete, playable experience.
+
+### 25.1 Current Implementation Status
+
+#### MEMZ Library (✅ Complete — Batch 5, commit `7552928`)
+
+| Crate | Files | Tests | Status |
+|-------|-------|-------|--------|
+| `memz-core` | 34 | 146 | ✅ All types, memory bank, observation, behavior, decay, retrieval, persistence, HNSW, social propagation, reflection, consolidation, eviction, safety, metrics, config |
+| `memz-llm` | 6 + 8 TOML + 4 GBNF | 19 | ✅ Prompt engine (TOML loader + builtins), LLM client, async queue, structured output |
+| `memz-veloren` | 9 | 33 | ✅ Bridge (personality mapping, entity registry, dialogue context), MemoryRule, dialogue hooks, events, config, rtsim adapter (doc-only) |
+| `memz-bench` | 1 | 9 (criterion) | ✅ Compiles clean |
+| **Total** | **53 files** | **202 tests** | **Zero warnings, clippy::pedantic clean** |
+
+#### What Exists But Isn't Wired In
+
+The `memz-veloren` crate contains all the logic needed for integration, but it runs as a **standalone library** — not inside Veloren's process. The `rtsim_adapter.rs` contains the complete adapter code as **doc-comments** (because importing it would create a circular dependency). To make it live, we must:
+
+1. **Fork Veloren** and add `memz-core`, `memz-llm`, `memz-veloren` as workspace dependencies
+2. **Create `veloren/rtsim/src/rule/memz.rs`** — paste and adapt the adapter from `rtsim_adapter.rs`
+3. **Register the rule** in `start_default_rules()` in `veloren/rtsim/src/lib.rs`
+4. **Modify the dialogue tree** in `veloren/rtsim/src/rule/npc_ai/dialogue.rs` to inject memory context
+5. **Add personality accessors** to `veloren/common/src/rtsim.rs` (fields are currently private)
+6. **Wire greeting/price hooks** into the existing NPC agent and trading systems
+
+---
+
+### 25.2 Veloren Architecture Analysis
+
+#### 25.2.1 The `RtState` + `Rule` + `Event` Pattern
+
+Veloren's rtsim (real-time simulation) is the heart of NPC behavior. It's a **rule-based event system**:
+
+```text
+RtState
+├── data: Data { npcs, sites, factions, reports, quests, tick, ... }
+├── rules: HashMap<TypeId, RuleState>
+├── resources: HashMap<TypeId, Resource>
+└── event_handlers: HashMap<TypeId, Vec<Handler>>
+
+Lifecycle:
+  server startup → RtState::new(data)
+    → start_default_rules()
+      → Migrate, Architect, ReplenishResources, ReportEvents,
+        SyncNpcs, SimulateNpcs, NpcAi, CleanUp
+    → server/src/rtsim/rule/start_rules()
+      → DepleteResources (server-side only rule)
+```
+
+**Rules** implement `trait Rule { fn start(rtstate: &mut RtState) -> Result<Self, RuleError> }` and bind event handlers via `rtstate.bind::<Self, EventType>(|ctx| { ... })`.
+
+**Events** currently defined:
+- `OnSetup` — server boot
+- `OnTick { tick, dt, time, time_of_day }` — every frame (~30Hz), `SystemData = NpcSystemData`
+- `OnDeath { actor, wpos, killer }` — NPC/player death
+- `OnHelped { actor, saver }` — NPC rescued
+- `OnHealthChange { actor, cause, new_health_fraction, change }` — damage/healing
+- `OnTheft { actor, wpos, sprite, site }` — stealing from the world
+- `OnMountVolume { actor, pos }` — boarding a vehicle
+
+**MEMZ maps to these events perfectly:**
+| Veloren Event | MEMZ Handler | Memory Created |
+|---------------|-------------|----------------|
+| `OnDeath` | `memory_rule::on_death` | Episodic (witnesses), Social (killer gossip), Reputation |
+| `OnHelped` | `memory_rule::on_helped` | Episodic (helper + witnesses), Reputation |
+| `OnTheft` | `memory_rule::on_theft` | Episodic + Social (witnesses), Reputation |
+| `OnHealthChange` | `memory_rule::on_combat` | Episodic (attacker/defender), Reputation |
+| `OnTick` | `memory_rule::on_tick` | Decay, reflection, gossip propagation, limit enforcement |
+
+#### 25.2.2 NPC Data Model
+
+```rust
+// veloren/rtsim/src/data/npc.rs
+pub struct Npc {
+    pub uid: u64,                          // Stable unique ID
+    pub seed: u32,                         // Deterministic RNG seed
+    pub wpos: Vec3<f32>,                   // World position
+    pub body: comp::Body,                  // Body type
+    pub role: Role,                        // Civilised/Wild/Monster/Vehicle
+    pub home: Option<SiteId>,              // Home settlement
+    pub faction: Option<FactionId>,        // Faction membership
+    pub health_fraction: f32,              // 0.0 = dead, 1.0 = max
+    pub known_reports: HashSet<ReportId>,  // Reports the NPC knows about
+    pub personality: Personality,           // OCEAN model (u8 values 0-255)
+    pub sentiments: Sentiments,            // Per-target i8 sentiment (-126..126)
+    pub job: Option<Job>,                  // Hired/Quest
+    pub controller: Controller,            // Actions to perform (unpersisted)
+    pub inbox: VecDeque<NpcInput>,         // Messages from agents (unpersisted)
+    pub mode: SimulationMode,              // Simulated vs Loaded
+    pub brain: Option<Brain>,              // AI action tree (unpersisted)
+}
+```
+
+**Key insight:** The `Personality` struct's fields (`openness`, `conscientiousness`, `extraversion`, `agreeableness`, `neuroticism`) are **private** with no public accessors. We need to add getter methods in our Veloren fork to map these to MEMZ `PersonalityTraits`.
+
+#### 25.2.3 NPC AI Brain & Dialogue
+
+The brain is a **combinator-based action tree**:
+
+```text
+think() → choose { urgent | important | casual }
+  ├── hired(tgt)           → follow_actor
+  ├── pirate(is_leader)    → raid/pillage
+  ├── adventure()          → travel between sites
+  ├── villager(site)       → daily schedule (work, socialize, sleep)
+  │   ├── day: profession-specific actions
+  │   ├── evening: tavern, socialize
+  │   └── night: go home, sleep
+  └── socialize()          → smalltalk_to(npc), dance
+```
+
+**Dialogue** uses a session-based question/response protocol:
+```text
+Player initiates → NpcInput::Interaction(Actor)
+  → dialogue::general(tgt, session)
+    → session.ask_question(msg, responses)
+      responses include:
+        - "About this place" → about_site(session)
+        - "About yourself"  → about_self(session)
+        - "What do you think of me?" → sentiments(tgt, session) ← **MEMZ replaces this**
+        - "Directions"      → directions(session)
+        - "Play a game"     → games(session)
+        - "Quest"           → quest_request(session)
+        - "Hire"            → hire(tgt, session)
+        - "Goodbye"         → say_statement(npc-goodbye)
+```
+
+**Integration point:** We inject MEMZ context into `general()`, `sentiments()`, and `about_self()`, and add new options like "Share gossip" and "Tell me what you remember."
+
+#### 25.2.4 Sentiment System (Current)
+
+Veloren's existing sentiment is a **single `i8`** per target (simple positivity score):
+
+```rust
+pub struct Sentiment { positivity: i8 }
+// 3-tier response: ALLY → "I like you", RIVAL → "I dislike you", else → "I'm ambivalent"
+```
+
+MEMZ replaces this with **rich, multi-memory sentiment** that references specific events.
+
+#### 25.2.5 Server ↔ Rtsim Bridge
+
+```text
+Server startup:
+  server/src/rtsim/mod.rs → RtSim::new()
+    → RtState::new(data)
+    → start_default_rules()        // rtsim-side rules
+    → rule::start_rules(rtstate)   // server-side rules (DepleteResources)
+
+Each server tick:
+  server/src/rtsim/tick.rs → RtSimTick system
+    → rtsim.state.tick(dt, world, index)
+      → fires OnTick → all bound handlers run
+    → sync loaded NPCs ↔ ECS agents (Controller → Agent behavior)
+```
+
+---
+
+### 25.3 Integration Architecture — The Bridge
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│                     Veloren Server Process                    │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │ RtState                                                 │ │
+│  │  ┌─────────────────────────────────────────────────┐    │ │
+│  │  │ Rules (execution order)                          │    │ │
+│  │  │                                                  │    │ │
+│  │  │  Migrate → Architect → ReplenishResources        │    │ │
+│  │  │  → ReportEvents → SyncNpcs → SimulateNpcs       │    │ │
+│  │  │  → NpcAi → MemzRule (NEW) → CleanUp             │    │ │
+│  │  │                ▲                                  │    │ │
+│  │  │                │                                  │    │ │
+│  │  │  ┌─────────────┴─────────────┐                   │    │ │
+│  │  │  │      MemzRule State       │                   │    │ │
+│  │  │  │  Arc<Mutex<MemoryRule>>   │                   │    │ │
+│  │  │  │  ├── banks: HashMap       │                   │    │ │
+│  │  │  │  ├── personalities        │                   │    │ │
+│  │  │  │  ├── registry             │                   │    │ │
+│  │  │  │  ├── reputation_boards    │                   │    │ │
+│  │  │  │  └── config               │                   │    │ │
+│  │  │  └───────────────────────────┘                   │    │ │
+│  │  └──────────────────────────────────────────────────┘    │ │
+│  │                                                         │ │
+│  │  Event Flow:                                            │ │
+│  │  OnDeath  ──→ MemzRule::on_death_handler  ──→ memories  │ │
+│  │  OnHelped ──→ MemzRule::on_helped_handler ──→ memories  │ │
+│  │  OnTheft  ──→ MemzRule::on_theft_handler  ──→ memories  │ │
+│  │  OnTick   ──→ MemzRule::on_tick_handler   ──→ decay     │ │
+│  │                                              + gossip   │ │
+│  │                                              + reflect  │ │
+│  │                                                         │ │
+│  │  Dialogue Integration:                                  │ │
+│  │  NpcAi::dialogue::general()                             │ │
+│  │    └─ accesses MemzRule via RtState resource             │ │
+│  │    └─ injects memory snippets into dialogue options      │ │
+│  │    └─ replaces sentiments() with memory-aware version    │ │
+│  └─────────────────────────────────────────────────────────┘ │
+│                                                              │
+│  Server-side Rules:                                          │
+│  └── DepleteResources (existing)                             │
+│  └── MemzPersistence (NEW) — periodic SQLite save            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Key Design Decision:** `MemzRule` stores its state as an `Arc<Mutex<MemoryRule>>` so it can be shared between:
+1. Event handlers (OnDeath, OnHelped, OnTheft) — which run during `RtState::emit()`
+2. OnTick handler — which runs during the main tick
+3. Dialogue functions — which access it via `RtState::get_resource::<MemzState>()`
+
+We register the `Arc<Mutex<MemoryRule>>` as an **RtState resource** so dialogue code can access it without owning the Rule.
+
+---
+
+### 25.4 Step-by-Step Integration Playbook
+
+#### Step 1: Fork & Setup Veloren
+
+```bash
+# Clone the Veloren monorepo
+git clone https://gitlab.com/veloren/veloren.git veloren-memz
+cd veloren-memz
+
+# Add MEMZ crates as path dependencies
+# Edit Cargo.toml (workspace root) to include memz crates
+```
+
+Add to the Veloren workspace `Cargo.toml`:
+```toml
+[workspace.dependencies]
+memz-core = { path = "../memz/memz-core" }
+memz-llm = { path = "../memz/memz-llm" }
+memz-veloren = { path = "../memz/memz-veloren" }
+```
+
+Add to `rtsim/Cargo.toml`:
+```toml
+[dependencies]
+memz-core.workspace = true
+memz-veloren.workspace = true
+parking_lot = "0.12"
+```
+
+Add to `server/Cargo.toml`:
+```toml
+[dependencies]
+memz-core.workspace = true
+memz-veloren.workspace = true
+```
+
+#### Step 2: Add Personality Accessors to Veloren
+
+**File:** `veloren/common/src/rtsim.rs`
+
+Add public getter methods to the `Personality` struct:
+
+```rust
+impl Personality {
+    // ... existing methods ...
+
+    /// Raw OCEAN values (0-255) for external systems.
+    pub fn openness(&self) -> u8 { self.openness }
+    pub fn conscientiousness(&self) -> u8 { self.conscientiousness }
+    pub fn extraversion(&self) -> u8 { self.extraversion }
+    pub fn agreeableness(&self) -> u8 { self.agreeableness }
+    pub fn neuroticism(&self) -> u8 { self.neuroticism }
+}
+```
+
+#### Step 3: Create `MemzRule` in Veloren rtsim
+
+**File:** `veloren/rtsim/src/rule/memz.rs` (NEW)
+
+This is the actual `Rule` implementation adapted from `rtsim_adapter.rs`. The full code is documented there — the adapter converts:
+- `Actor::Npc(NpcId)` → MEMZ `EntityId` via `EntityRegistry`
+- `Actor::Character(CharacterId)` → MEMZ `EntityId` via `EntityRegistry`
+- Veloren `Vec3<f32>` → MEMZ `Location { x, y, z }`
+- Veloren `data.tick` → MEMZ `GameTimestamp`
+- Veloren `Personality(u8 OCEAN)` → MEMZ `PersonalityTraits(f32 0-1)`
+
+**Event bindings:**
+```rust
+impl Rule for MemzRule {
+    fn start(rtstate: &mut RtState) -> Result<Self, RuleError> {
+        let memory = Arc::new(Mutex::new(MemoryRule::new()));
+
+        // Register as resource so dialogue code can access it
+        rtstate.with_resource(MemzState(Arc::clone(&memory)));
+
+        // Bind all event handlers
+        bind_on_death(rtstate, &memory);
+        bind_on_helped(rtstate, &memory);
+        bind_on_theft(rtstate, &memory);
+        bind_on_health_change(rtstate, &memory);
+        bind_on_tick(rtstate, &memory);
+
+        Ok(Self { memory })
+    }
+}
+```
+
+#### Step 4: Register the Rule
+
+**File:** `veloren/rtsim/src/rule/mod.rs`
+
+```rust
+pub mod memz;  // Add module declaration
+```
+
+**File:** `veloren/rtsim/src/lib.rs`
+
+```rust
+fn start_default_rules(&mut self) {
+    info!("Starting default rtsim rules...");
+    self.start_rule::<rule::migrate::Migrate>();
+    self.start_rule::<rule::architect::Architect>();
+    self.start_rule::<rule::replenish_resources::ReplenishResources>();
+    self.start_rule::<rule::report::ReportEvents>();
+    self.start_rule::<rule::sync_npcs::SyncNpcs>();
+    self.start_rule::<rule::simulate_npcs::SimulateNpcs>();
+    self.start_rule::<rule::npc_ai::NpcAi>();
+    self.start_rule::<rule::memz::MemzRule>();  // ← NEW: after NpcAi, before CleanUp
+    self.start_rule::<rule::cleanup::CleanUp>();
+}
+```
+
+**Why after NpcAi?** The NpcAi rule runs brain ticks and generates dialogue. MemzRule then processes the resulting events and enriches the controller state. CleanUp runs last to trim sentiments etc.
+
+#### Step 5: Modify Dialogue to Use Memory
+
+**File:** `veloren/rtsim/src/rule/npc_ai/dialogue.rs`
+
+Replace the `sentiments()` function to use MEMZ:
+
+```rust
+fn sentiments<S: State>(tgt: Actor, session: DialogueSession) -> impl Action<S> {
+    now(move |ctx, _| {
+        // Try to use MEMZ memory-aware sentiments
+        if let Some(memz_state) = ctx.data.resource::<MemzState>() {
+            let rule = memz_state.0.lock();
+            let entity = actor_to_memz_entity(&rule.registry, ctx.npc, ctx.npc_id);
+            let player = actor_to_memz_entity_from_actor(&rule.registry, tgt, &ctx.data);
+
+            if let Some(bank) = rule.bank(entity) {
+                let sentiment_level = bridge::SentimentLevel::from_value(
+                    ctx.sentiments.toward(tgt).value()
+                );
+                let personality = rule.personality(&entity);
+                let ts = bridge::veloren_time_to_timestamp(ctx.data.tick);
+                let response = memz_dialogue::generate_sentiment_response(
+                    bank, &personality, player,
+                    &ctx.npc.get_name().unwrap_or_default(),
+                    sentiment_level, &ts,
+                );
+                return session.say_statement(Content::Plain(response)).boxed();
+            }
+        }
+
+        // Fallback to vanilla 3-tier sentiments
+        if ctx.sentiments.toward(tgt).is(Sentiment::ALLY) {
+            session.say_statement(Content::localized("npc-response-like_you")).boxed()
+        } else if ctx.sentiments.toward(tgt).is(Sentiment::RIVAL) {
+            session.say_statement(Content::localized("npc-response-dislike_you")).boxed()
+        } else {
+            session.say_statement(Content::localized("npc-response-ambivalent_you")).boxed()
+        }
+    })
+}
+```
+
+Add a **"Share gossip"** and **"What do you remember?"** option to `general()`:
+
+```rust
+// In general(), add to the responses vec:
+
+// Memory-aware gossip sharing
+responses.push((
+    Response::from(Content::localized("dialogue-share-gossip")),
+    gossip_from_memory(session).boxed(),
+));
+
+// "Tell me what you remember about me"
+responses.push((
+    Response::from(Content::localized("dialogue-what-remember")),
+    memory_recall(tgt, session).boxed(),
+));
+```
+
+#### Step 6: Wire Greeting Integration
+
+**File:** `veloren/rtsim/src/rule/npc_ai/mod.rs`
+
+In the `talk_to()` function, replace the generic greeting with a memory-aware one:
+
+```rust
+fn talk_to<S: State>(tgt: Actor) -> impl Action<S> {
+    now(move |ctx, _| {
+        if ctx.sentiments.toward(tgt).is(Sentiment::ENEMY) {
+            // Memory-aware hostile greeting
+            just(move |ctx, _| {
+                let greeting = memz_greeting(ctx, tgt)
+                    .unwrap_or_else(|| Content::localized("npc-speech-reject_rival"));
+                ctx.controller.say(tgt, greeting)
+            }).boxed()
+        } else if matches!(tgt, Actor::Character(_)) {
+            do_dialogue(tgt, move |session| dialogue::general(tgt, session)).boxed()
+        } else {
+            smalltalk_to(tgt).boxed()
+        }
+    })
+}
+```
+
+#### Step 7: Add i18n Keys
+
+**File:** `veloren/assets/voxygen/i18n/en/dialogue.ftl` (or similar)
+
+```ftl
+dialogue-share-gossip = Have you heard any rumors?
+dialogue-what-remember = What do you remember about me?
+```
+
+---
+
+### 25.5 Veloren Source Modifications (Complete Diff Guide)
+
+Here is every file in the Veloren source tree that needs modification, and what changes:
+
+| # | File | Change | Complexity |
+|---|------|--------|-----------|
+| 1 | `Cargo.toml` (workspace root) | Add memz-core, memz-llm, memz-veloren to `[workspace.dependencies]` | Trivial |
+| 2 | `rtsim/Cargo.toml` | Add `memz-core`, `memz-veloren`, `parking_lot` to `[dependencies]` | Trivial |
+| 3 | `server/Cargo.toml` | Add `memz-core`, `memz-veloren` to `[dependencies]` | Trivial |
+| 4 | `common/src/rtsim.rs` | Add 5 getter methods to `Personality` impl | 5 lines |
+| 5 | `rtsim/src/rule/mod.rs` | Add `pub mod memz;` | 1 line |
+| 6 | `rtsim/src/rule/memz.rs` | **NEW FILE** — `MemzRule` impl (adapt from `rtsim_adapter.rs`) | ~200 lines |
+| 7 | `rtsim/src/lib.rs` | Add `self.start_rule::<rule::memz::MemzRule>();` in `start_default_rules()` | 1 line |
+| 8 | `rtsim/src/rule/npc_ai/dialogue.rs` | Replace `sentiments()`, add gossip/recall options to `general()` | ~60 lines |
+| 9 | `rtsim/src/rule/npc_ai/mod.rs` | Modify `talk_to()` greeting to use memory | ~15 lines |
+| 10 | `server/src/rtsim/rule/mod.rs` | (Optional) Add `MemzPersistence` rule for periodic saves | ~30 lines |
+| 11 | `assets/voxygen/i18n/en/dialogue.ftl` | Add 2-4 i18n keys for new dialogue options | 4 lines |
+
+**Total Veloren changes: ~320 lines across 11 files.** Everything else lives in the MEMZ crates.
+
+---
+
+### 25.6 Build & Run Instructions
+
+#### Local Build (macOS / Linux)
+
+```bash
+# 1. Clone Veloren fork with MEMZ integration
+git clone https://github.com/sid-2209/veloren-memz.git
+cd veloren-memz
+
+# 2. Ensure MEMZ crates are available (sibling directory or git submodule)
+#    Option A: Symlink
+ln -s /path/to/memz ../memz
+
+#    Option B: Git submodule (preferred for distribution)
+git submodule add https://github.com/sid-2209/memz-veloren.git memz
+
+# 3. Build the server + client
+cargo build --release -p veloren-voxygen -p veloren-server-cli
+
+# 4. Run the server
+./target/release/veloren-server-cli &
+
+# 5. Run the client (connects to localhost)
+./target/release/veloren-voxygen
+
+# 6. (Optional) Start Ollama for LLM-enhanced features
+ollama pull qwen2.5:1.5b
+ollama serve
+```
+
+#### Nix Build (Veloren-native)
+
+```bash
+nix develop
+cargo run --release -p veloren-voxygen
+```
+
+#### WASM / Web (Stretch Goal)
+
+Veloren does not currently ship a WASM build. A web version would require:
+- The WASM build support tracked in Veloren's issue tracker
+- Disabling SQLite persistence (use IndexedDB instead)
+- Disabling ONNX embeddings (use keyword-only retrieval)
+- All LLM calls routed to a cloud endpoint
+
+This is a Phase 5 (Community & Growth) deliverable, not a launch requirement.
+
+---
+
+### 25.7 Integration Test Plan
+
+| Test | What It Validates | How |
+|------|------------------|-----|
+| **Smoke: NPC remembers player** | Basic episodic memory creation | Attack NPC → talk to NPC → NPC mentions the attack |
+| **Gossip propagation** | Social memory sharing | Kill a monster near 2 NPCs → check if a 3rd NPC in the tavern heard about it |
+| **Greeting changes** | Behavior modification from memory | Help NPC 3 times → approach NPC → verify warm greeting |
+| **Price modifier** | Trade integration | Build positive history → check shop prices are lower |
+| **Reputation board** | Settlement-wide tracking | Commit theft → check multiple NPCs in town react negatively |
+| **Memory decay** | Ebbinghaus curve | Wait 1000+ game ticks → verify old memories have reduced strength |
+| **Personality mapping** | OCEAN → MEMZ PersonalityTraits | Verify introverted NPCs gossip less, agreeable NPCs trust gossip more |
+| **Save/load persistence** | Memory survives restart | Create memories → restart server → verify memories intact |
+| **Performance: 50 NPCs** | Frame budget compliance | Run with 50 active NPCs, verify MEMZ processing < 0.5ms |
+| **Fallback: no LLM** | Graceful degradation | Run without Ollama → all features work via rule-based fallback |
+
+---
+
+### 25.8 Known Gaps & TODO Items
+
+| Gap | Impact | Resolution Path | Priority |
+|-----|--------|----------------|----------|
+| **Personality fields are private** | Can't read OCEAN values for mapping | Add 5 getter methods to Veloren's `Personality` struct | P0 — blocking |
+| **Sentiment.value() is private** | Can't read exact sentiment for MEMZ `SentimentLevel` mapping | Add `pub fn value(&self) -> f32` to `Sentiment` (or use `is()` thresholds) | P0 — blocking |
+| **No `OnTrade` event** | Trade events don't generate memories | Either: (a) add `OnTrade` event to rtsim, or (b) hook into server-side trade completion | P1 |
+| **No `OnDialogue` event** | Dialogue content isn't captured as memories | Hook into `NpcAction::Dialogue` processing in `simulate_npcs.rs` | P1 |
+| **SiteId → SettlementId mapping** | No stable mapping between Veloren sites and MEMZ settlements | Maintain a `HashMap<SiteId, SettlementId>` in MemzRule, populated on first encounter | P1 |
+| **NPC name access** | `Npc::get_name()` uses deterministic RNG, not persisted | Use `npc.get_name()` consistently; names are deterministic from seed so they're stable | P2 — works as-is |
+| **Embedding generation on NPC tick** | ONNX inference is too slow for real-time | Use keyword-only retrieval by default; embeddings only for LLM-enhanced prompts (async) | P2 |
+| **Memory persistence location** | Where to save SQLite DB relative to Veloren's rtsim data | Co-locate with `data.dat` in the rtsim directory; backup alongside Veloren's backup cycle | P2 |
+| **MemzRule access from dialogue** | Dialogue functions run in `NpcAi` brain tick, need access to MemzRule state | Store `Arc<Mutex<MemoryRule>>` as `RtState` resource; dialogue accesses via `ctx.data` or `NpcCtx` extension | P0 — architectural |
+| **WASM compatibility** | No web build of Veloren exists yet | Punt to Phase 5; not a launch requirement | P3 |
+| **Multiplayer memory isolation** | Multiple players should have independent NPC memory streams | MemoryRule already uses `HashMap<EntityId, MemoryBank>` — each player is a unique EntityId | P2 — mostly works |
+
+#### Critical Path to Playable Demo
+
+```
+1. Fork Veloren                                    → 1 day
+2. Add personality/sentiment accessors             → 0.5 day
+3. Create memz.rs rule + register it               → 2 days
+4. Wire dialogue integration                       → 2 days
+5. Add i18n keys                                   → 0.5 day
+6. Integration test + debug                        → 3 days
+7. Performance tuning                              → 2 days
+                                            Total: ~11 days
+```
+
+**Minimum Viable Demo (Day 5):** NPCs remember deaths, theft, and help events. Greetings change based on history. Sentiments reference specific memories. No LLM required (pure rule-based).
+
+**Full Demo (Day 11):** + Gossip propagation, reputation boards, price modifiers, memory decay, persistence across saves. Optional Ollama integration for richer dialogue.
+
+---
+
 ## Final Note
 
 > **MEMZ is not just a mod. It's a thesis statement:**  
@@ -2359,9 +2918,19 @@ MEMZ Server Metrics (Prometheus-compatible):
 
 ---
 
-*Document version: 3.0 — Production-Ready Edition*  
+*Document version: 3.1 — Integration-Ready Edition*  
 *Last updated: 20 February 2026*  
-*Project Vyuh — MEMZ*  
+*MEMZ*  
+
+*Changelog:*  
+*v3.1 — Added End-to-End Veloren Integration Plan (§25): complete codebase analysis of*  
+*both MEMZ (53 files, 202 tests) and Veloren rtsim (Rule/Event architecture, NPC data model,*  
+*dialogue system, sentiment system, server bridge). Step-by-step playbook with 11 Veloren*  
+*source modifications (~320 lines total), architecture diagrams, build instructions,*  
+*integration test plan, known gaps/TODO matrix, and critical path timeline (~11 days to*  
+*playable demo). Key findings: Personality fields need public accessors, MemzRule registers*  
+*as RtState resource for dialogue access, maps to all 6 Veloren events, dialogue integration*  
+*replaces 3-tier sentiments with memory-aware responses.*
 
 *Changelog:*  
 *v3.0 — Added Procedural Memory type (§8.7), Memory Consolidation system (§8.8),*  
