@@ -47,7 +47,7 @@ pub fn social_retention(memory: &SocialMemory, current_time: &GameTimestamp) -> 
 
     // Social memories decay faster (gossip is less durable than personal experience).
     let trust_factor = f64::from(memory.trust_in_source);
-    let chain_penalty = 1.0 / (1.0 + memory.propagation_depth as f64);
+    let chain_penalty = 1.0 / (1.0 + f64::from(memory.propagation_depth));
     let strength = trust_factor * chain_penalty * 10.0; // base strength ~10 for trusted sources
 
     ebbinghaus(delta_days, strength)
@@ -68,7 +68,7 @@ pub fn ebbinghaus(delta_days: f64, strength: f64) -> f64 {
 
 /// Compute memory strength S from contributing factors.
 ///
-/// S = base_strength × (1 + importance) × (1 + emotional_intensity) × log2(1 + access_count) × first_meeting_bonus
+/// S = `base_strength` × (1 + importance) × (1 + `emotional_intensity`) × log2(1 + `access_count`) × `first_meeting_bonus`
 #[must_use]
 pub fn memory_strength(
     importance: f32,
@@ -80,7 +80,7 @@ pub fn memory_strength(
 
     let importance_factor = 1.0 + f64::from(importance);
     let emotional_factor = 1.0 + f64::from(emotional_intensity); // flashbulb memory effect
-    let rehearsal_factor = (1.0 + access_count as f64).log2().max(1.0); // spaced repetition
+    let rehearsal_factor = (1.0 + f64::from(access_count)).log2().max(1.0); // spaced repetition
     let first_meeting_bonus = if is_first_meeting { 1.5 } else { 1.0 };
 
     base * importance_factor * emotional_factor * rehearsal_factor * first_meeting_bonus

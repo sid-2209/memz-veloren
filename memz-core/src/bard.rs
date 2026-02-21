@@ -158,6 +158,7 @@ impl BardComposition {
 /// Rule-based fallback for bard composition (Tier 0).
 ///
 /// Produces simple template-based songs when LLM is unavailable.
+#[must_use] 
 pub fn compose_rule_based(
     composer: EntityId,
     subject: Option<EntityId>,
@@ -292,6 +293,7 @@ impl Repertoire {
     /// Select the best song to perform right now.
     ///
     /// Prefers songs that haven't been performed at the current settlement.
+    #[must_use] 
     pub fn select_for_performance(
         &self,
         current_settlement: SettlementId,

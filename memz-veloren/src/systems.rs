@@ -80,7 +80,7 @@ fn event_to_description(event: &GameEvent) -> String {
             speaker,
             content,
             ..
-        } => format!("Entity {:?} said: \"{}\"", speaker, content),
+        } => format!("Entity {speaker:?} said: \"{content}\""),
 
         GameEvent::Combat {
             attacker,
@@ -96,16 +96,14 @@ fn event_to_description(event: &GameEvent) -> String {
                 crate::events::CombatOutcome::Interrupted => "but it was interrupted",
             };
             format!(
-                "Entity {:?} attacked entity {:?} {}",
-                attacker, defender, outcome_str
+                "Entity {attacker:?} attacked entity {defender:?} {outcome_str}"
             )
         }
 
         GameEvent::Trade {
             buyer, seller, item, ..
         } => format!(
-            "Entity {:?} bought {} from entity {:?}",
-            buyer, item, seller
+            "Entity {buyer:?} bought {item} from entity {seller:?}"
         ),
 
         GameEvent::Helped {
@@ -114,8 +112,7 @@ fn event_to_description(event: &GameEvent) -> String {
             action,
             ..
         } => format!(
-            "Entity {:?} helped entity {:?}: {}",
-            helper, helped, action
+            "Entity {helper:?} helped entity {helped:?}: {action}"
         ),
 
         GameEvent::Harmed {
@@ -124,14 +121,12 @@ fn event_to_description(event: &GameEvent) -> String {
             action,
             ..
         } => format!(
-            "Entity {:?} harmed entity {:?}: {}",
-            perpetrator, victim, action
+            "Entity {perpetrator:?} harmed entity {victim:?}: {action}"
         ),
 
         GameEvent::Arrival { entity, location, .. } => {
             format!(
-                "Entity {:?} arrived at {}",
-                entity, location
+                "Entity {entity:?} arrived at {location}"
             )
         }
 
@@ -141,13 +136,12 @@ fn event_to_description(event: &GameEvent) -> String {
             event_type,
             ..
         } => format!(
-            "Entity {:?} triggered quest event '{}' in quest '{}'",
-            entity, event_type, quest_name
+            "Entity {entity:?} triggered quest event '{event_type}' in quest '{quest_name}'"
         ),
 
         GameEvent::Death {
             entity, cause, ..
-        } => format!("Entity {:?} died: {}", entity, cause),
+        } => format!("Entity {entity:?} died: {cause}"),
 
         GameEvent::Custom { description, .. } => description.clone(),
     }

@@ -133,8 +133,8 @@ pub fn observe(
     result.episodic_created = 1;
 
     // --- 3. Create emotional memory for high-valence events ---
-    if event.emotional_valence.abs() > 0.4 {
-        if let Some(target) = primary_target(&event.participants, observer) {
+    if event.emotional_valence.abs() > 0.4
+        && let Some(target) = primary_target(&event.participants, observer) {
             let emotion = classify_emotion(event.emotional_valence, &event.kind);
             let emotional = EmotionalMemory::new(
                 target,
@@ -147,7 +147,6 @@ pub fn observe(
             bank.emotional.push(emotional);
             result.emotional_created = 1;
         }
-    }
 
     // --- 4. Determine secondary triggers ---
     result.should_trigger_reflection = event.emotional_valence.abs() > 0.7

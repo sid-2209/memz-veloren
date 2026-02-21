@@ -20,7 +20,7 @@ pub struct SemanticMemory {
     pub confidence: f32,
     /// IDs of episodic memories that support this fact.
     pub derived_from: Vec<MemoryId>,
-    /// Category for organization (e.g., "person_knowledge", "world_fact", "skill_knowledge").
+    /// Category for organization (e.g., "`person_knowledge`", "`world_fact`", "`skill_knowledge`").
     pub category: String,
     /// When this fact was last reinforced by new evidence.
     pub last_reinforced: GameTimestamp,

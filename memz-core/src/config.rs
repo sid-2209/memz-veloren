@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level MEMZ configuration, loadable from TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct MemzConfig {
     /// General settings.
     #[serde(default)]
@@ -42,23 +43,6 @@ pub struct MemzConfig {
     pub telemetry: TelemetryConfig,
 }
 
-impl Default for MemzConfig {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            memory: MemoryConfig::default(),
-            retrieval: RetrievalConfig::default(),
-            llm: LlmConfig::default(),
-            social: SocialConfig::default(),
-            first_five_minutes: FirstFiveMinutesConfig::default(),
-            performance: PerformanceConfig::default(),
-            persistence: PersistenceConfig::default(),
-            safety: SafetyConfig::default(),
-            accessibility: AccessibilityConfig::default(),
-            telemetry: TelemetryConfig::default(),
-        }
-    }
-}
 
 impl MemzConfig {
     /// Load configuration from a TOML string.
@@ -164,10 +148,10 @@ pub struct EvictionConfig {
     /// In-memory warm ring: last N game-days.
     #[serde(default = "default_7")]
     pub warm_ring_days: u32,
-    /// SQLite cold ring: last N game-days.
+    /// `SQLite` cold ring: last N game-days.
     #[serde(default = "default_90")]
     pub cold_ring_days: u32,
-    /// Protect memories with |emotional_valence| above this threshold.
+    /// Protect memories with |`emotional_valence`| above this threshold.
     #[serde(default = "default_0_8")]
     pub protect_emotional_threshold: f32,
     /// Whether to protect first-meeting memories from eviction.
@@ -190,7 +174,7 @@ impl Default for EvictionConfig {
 /// Memory retrieval algorithm settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalConfig {
-    /// Algorithm: "hnsw", "brute_force", "tfidf".
+    /// Algorithm: "hnsw", "`brute_force`", "tfidf".
     #[serde(default = "default_hnsw")]
     pub algorithm: String,
     /// Number of memories retrieved per interaction.
@@ -254,7 +238,7 @@ impl Default for RetrievalWeights {
 /// LLM integration configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    /// Provider: "ollama", "openai", "llama_cpp", "none".
+    /// Provider: "ollama", "openai", "`llama_cpp`", "none".
     #[serde(default = "default_ollama")]
     pub provider: String,
     /// Base URL for the LLM API.

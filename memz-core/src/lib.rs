@@ -25,6 +25,17 @@
 #![deny(missing_docs)]
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
+#![allow(clippy::cast_precision_loss)] // u32/usize → f32 is intentional for game math
+#![allow(clippy::cast_possible_truncation)] // usize → u32 is fine for memory counts
+#![allow(clippy::cast_sign_loss)] // i64 → u64 conversions are bounds-checked
+#![allow(clippy::too_many_arguments)] // game systems naturally have many parameters
+#![allow(clippy::struct_excessive_bools)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::match_same_arms)] // match arms kept separate for readability
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::trivially_copy_pass_by_ref)]
+#![allow(clippy::needless_pass_by_value)]
 
 pub mod bard;
 pub mod behavior;

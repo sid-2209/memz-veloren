@@ -146,6 +146,7 @@ impl LlmQueue {
     /// Enqueue a new LLM request.
     ///
     /// Returns the request ID, or `None` if the queue is full.
+    #[must_use] 
     pub fn enqueue(
         &self,
         priority: LlmPriority,
@@ -185,6 +186,7 @@ impl LlmQueue {
     /// Dequeue the highest-priority non-expired request.
     ///
     /// Automatically skips and counts expired requests.
+    #[must_use] 
     pub fn dequeue(&self) -> Option<QueuedRequest> {
         let mut inner = self.inner.lock();
 
@@ -230,6 +232,7 @@ impl LlmQueue {
     }
 
     /// Purge all expired requests from the queue.
+    #[must_use] 
     pub fn purge_expired(&self) -> u64 {
         let mut inner = self.inner.lock();
         let before = inner.heap.len();

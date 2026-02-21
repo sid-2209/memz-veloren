@@ -6,7 +6,7 @@
 //! - `common::rtsim::Actor` / `NpcId` / `CharacterId` (entity identity)
 //!
 //! MEMZ uses:
-//! - `PersonalityTraits` (credulity, openness, gossip_tendency, emotional_volatility, bravery; f32 0–1)
+//! - `PersonalityTraits` (credulity, openness, `gossip_tendency`, `emotional_volatility`, bravery; f32 0–1)
 //! - `PADState` (Pleasure-Arousal-Dominance; f32 -1..1)
 //! - `EntityId` (UUID)
 //!
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 // Personality Mapping
 // ---------------------------------------------------------------------------
 
-/// Map Veloren's OCEAN personality (u8 0–255) to MEMZ PersonalityTraits (f32 0–1).
+/// Map Veloren's OCEAN personality (u8 0–255) to MEMZ `PersonalityTraits` (f32 0–1).
 ///
 /// The mapping is:
 /// - `openness` → `openness` (direct)
@@ -39,7 +39,7 @@ pub fn veloren_personality_to_memz(
     agreeableness: u8,
     neuroticism: u8,
 ) -> PersonalityTraits {
-    let norm = |v: u8| v as f32 / 255.0;
+    let norm = |v: u8| f32::from(v) / 255.0;
 
     let o = norm(openness);
     let _c = norm(conscientiousness);
@@ -56,7 +56,7 @@ pub fn veloren_personality_to_memz(
     }
 }
 
-/// Map MEMZ PersonalityTraits back to Veloren's OCEAN (u8 0–255).
+/// Map MEMZ `PersonalityTraits` back to Veloren's OCEAN (u8 0–255).
 ///
 /// This is the reverse of `veloren_personality_to_memz`, but imprecise
 /// because the mapping is many-to-one. We produce a "best guess" OCEAN.
@@ -189,13 +189,13 @@ impl SentimentLevel {
 /// save/load cycles.
 #[derive(Debug, Clone, Default)]
 pub struct EntityRegistry {
-    /// Veloren NPC numeric seed → MEMZ EntityId.
+    /// Veloren NPC numeric seed → MEMZ `EntityId`.
     npc_to_memz: HashMap<u64, EntityId>,
-    /// MEMZ EntityId → Veloren NPC numeric seed.
+    /// MEMZ `EntityId` → Veloren NPC numeric seed.
     memz_to_npc: HashMap<EntityId, u64>,
-    /// Character (player) ID → MEMZ EntityId.
+    /// Character (player) ID → MEMZ `EntityId`.
     character_to_memz: HashMap<i64, EntityId>,
-    /// MEMZ EntityId → Character (player) ID.
+    /// MEMZ `EntityId` → Character (player) ID.
     memz_to_character: HashMap<EntityId, i64>,
 }
 
@@ -230,13 +230,13 @@ impl EntityRegistry {
             })
     }
 
-    /// Look up a Veloren NPC UID from a MEMZ EntityId.
+    /// Look up a Veloren NPC UID from a MEMZ `EntityId`.
     #[must_use]
     pub fn lookup_npc(&self, entity: &EntityId) -> Option<u64> {
         self.memz_to_npc.get(entity).copied()
     }
 
-    /// Look up a character ID from a MEMZ EntityId.
+    /// Look up a character ID from a MEMZ `EntityId`.
     #[must_use]
     pub fn lookup_character(&self, entity: &EntityId) -> Option<i64> {
         self.memz_to_character.get(entity).copied()

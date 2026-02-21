@@ -71,7 +71,7 @@ impl MemoryRule {
 
     /// Get or create a memory bank for an entity.
     pub fn bank_mut(&mut self, entity: EntityId) -> &mut MemoryBank {
-        self.banks.entry(entity).or_insert_with(MemoryBank::new)
+        self.banks.entry(entity).or_default()
     }
 
     /// Get a memory bank (read-only).
@@ -81,6 +81,7 @@ impl MemoryRule {
     }
 
     /// Get or create personality for an entity.
+    #[must_use] 
     pub fn personality(&self, entity: &EntityId) -> PersonalityTraits {
         self.personalities
             .get(entity)
@@ -435,7 +436,7 @@ pub fn on_tick(
     let reflection_config = ReflectionConfig::default();
 
     // Decay runs every 60 ticks (~1 second at 60 FPS)
-    if tick % 60 == 0 {
+    if tick.is_multiple_of(60) {
         for bank in rule.banks.values_mut() {
             decay::decay_episodic_memories(&mut bank.episodic, &timestamp, &config);
             decay::decay_social_memories(&mut bank.social, &timestamp, f64::from(config.decay_rate));
@@ -443,7 +444,7 @@ pub fn on_tick(
     }
 
     // Reflection check runs every 5000 ticks (~5 game-minutes)
-    if tick % 5000 == 0 {
+    if tick.is_multiple_of(5000) {
         let entities: Vec<EntityId> = rule.banks.keys().copied().collect();
         for entity in entities {
             let _personality = rule.personality(&entity);
@@ -452,8 +453,7 @@ pub fn on_tick(
                 let last_reflection_tick = bank
                     .reflective
                     .last()
-                    .map(|r| r.generated_at.tick)
-                    .unwrap_or(0);
+                    .map_or(0, |r| r.generated_at.tick);
                 let _should = reflection::should_reflect(
                     last_reflection_tick,
                     tick,
@@ -470,7 +470,7 @@ pub fn on_tick(
     }
 
     // Memory limit enforcement runs every 300 ticks
-    if tick % 300 == 0 {
+    if tick.is_multiple_of(300) {
         for bank in rule.banks.values_mut() {
             bank.episodic.truncate(config.max_episodic_per_npc);
             bank.semantic.truncate(config.max_semantic_per_npc);
@@ -481,14 +481,14 @@ pub fn on_tick(
     }
 
     // Reputation decay runs every 10000 ticks
-    if tick % 10_000 == 0 {
+    if tick.is_multiple_of(10_000) {
         for board in rule.reputation_boards.values_mut() {
             board.decay_reputations(0.02, timestamp);
         }
     }
 }
 
-/// Process a GameEvent through the full MEMZ pipeline.
+/// Process a `GameEvent` through the full MEMZ pipeline.
 ///
 /// This is the main entry point for converting high-level game events
 /// to memory operations. It dispatches to the appropriate handler

@@ -28,7 +28,7 @@ pub enum MemzError {
     #[error("Serialization error: {0}")]
     Serialization(String),
 
-    /// SQLite persistence error.
+    /// `SQLite` persistence error.
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
 

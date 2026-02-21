@@ -116,7 +116,7 @@ impl EmbeddingProvider for StubEmbeddingProvider {
         self.dims
     }
 
-    fn model_name(&self) -> &str {
+    fn model_name(&self) -> &'static str {
         "stub-zero-vector"
     }
 }
@@ -160,7 +160,7 @@ impl EmbeddingProvider for RandomEmbeddingProvider {
         self.dims
     }
 
-    fn model_name(&self) -> &str {
+    fn model_name(&self) -> &'static str {
         "random-unit-vector"
     }
 }

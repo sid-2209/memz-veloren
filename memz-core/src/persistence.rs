@@ -1,7 +1,7 @@
-//! SQLite persistence layer for the MEMZ memory system.
+//! `SQLite` persistence layer for the MEMZ memory system.
 //!
 //! Each entity's [`MemoryBank`] is serialised to JSON and stored in a
-//! per-world SQLite database.  The schema is intentionally simple:
+//! per-world `SQLite` database.  The schema is intentionally simple:
 //!
 //! ```sql
 //! CREATE TABLE IF NOT EXISTS memory_banks (
@@ -17,7 +17,7 @@
 //! - JSON inside a BLOB column keeps the schema stable across memory-type
 //!   changes (forward-compatible).
 //! - Optional CRC-32 checksum detects save corruption.
-//! - Backup support via SQLite's online-backup API.
+//! - Backup support via `SQLite`'s online-backup API.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -65,7 +65,7 @@ fn crc32_compute(data: &[u8]) -> u32 {
 // PersistenceEngine
 // ---------------------------------------------------------------------------
 
-/// Handle to an open SQLite database that stores [`MemoryBank`]s.
+/// Handle to an open `SQLite` database that stores [`MemoryBank`]s.
 ///
 /// # Usage
 ///
@@ -97,14 +97,14 @@ impl std::fmt::Debug for PersistenceEngine {
 }
 
 impl PersistenceEngine {
-    /// Open (or create) an SQLite database at `path`.
+    /// Open (or create) an `SQLite` database at `path`.
     ///
     /// The schema is automatically created if it does not exist.
     /// WAL mode is enabled when `config.wal_mode` is `true`.
     ///
     /// # Errors
     ///
-    /// Returns [`MemzError::Database`] on SQLite failures.
+    /// Returns [`MemzError::Database`] on `SQLite` failures.
     pub fn open<P: AsRef<Path>>(path: P, config: &PersistenceConfig) -> Result<Self> {
         let db_path = path.as_ref().to_path_buf();
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -148,7 +148,7 @@ impl PersistenceEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`MemzError::Database`] on SQLite failures.
+    /// Returns [`MemzError::Database`] on `SQLite` failures.
     pub fn open_in_memory(config: &PersistenceConfig) -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(
@@ -179,7 +179,7 @@ impl PersistenceEngine {
     /// # Errors
     ///
     /// Returns [`MemzError::Serialization`] if JSON encoding fails, or
-    /// [`MemzError::Database`] on SQLite failures.
+    /// [`MemzError::Database`] on `SQLite` failures.
     pub fn save_bank(&self, entity_id: &EntityId, bank: &MemoryBank) -> Result<()> {
         let start = Instant::now();
 
@@ -225,7 +225,7 @@ impl PersistenceEngine {
     /// # Errors
     ///
     /// Returns [`MemzError::Serialization`] if JSON decoding fails, or
-    /// [`MemzError::Database`] on SQLite failures.
+    /// [`MemzError::Database`] on `SQLite` failures.
     pub fn load_bank(&self, entity_id: &EntityId) -> Result<Option<MemoryBank>> {
         let start = Instant::now();
         let id_str = entity_id.0.to_string();
@@ -245,8 +245,8 @@ impl PersistenceEngine {
         };
 
         // Verify checksum if enabled.
-        if self.config.checksum_enabled {
-            if let Some(ref expected) = stored_checksum {
+        if self.config.checksum_enabled
+            && let Some(ref expected) = stored_checksum {
                 let actual = crc32_hex(&data);
                 if *expected != actual {
                     warn!(
@@ -257,7 +257,6 @@ impl PersistenceEngine {
                     );
                 }
             }
-        }
 
         let bank: MemoryBank =
             serde_json::from_slice(&data).map_err(|e| MemzError::Serialization(e.to_string()))?;
@@ -279,7 +278,7 @@ impl PersistenceEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`MemzError::Database`] on SQLite failures.
+    /// Returns [`MemzError::Database`] on `SQLite` failures.
     pub fn delete_bank(&self, entity_id: &EntityId) -> Result<bool> {
         let id_str = entity_id.0.to_string();
         let deleted = self
@@ -292,7 +291,7 @@ impl PersistenceEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`MemzError::Database`] on SQLite failures.
+    /// Returns [`MemzError::Database`] on `SQLite` failures.
     pub fn list_entities(&self) -> Result<Vec<EntityId>> {
         let mut stmt = self
             .conn
@@ -320,7 +319,7 @@ impl PersistenceEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`MemzError::Database`] on SQLite failures.
+    /// Returns [`MemzError::Database`] on `SQLite` failures.
     pub fn entity_count(&self) -> Result<usize> {
         let count: i64 = self
             .conn
@@ -332,14 +331,14 @@ impl PersistenceEngine {
     // Backup
     // ------------------------------------------------------------------
 
-    /// Create a backup of the database to `dest_path` using SQLite's
+    /// Create a backup of the database to `dest_path` using `SQLite`'s
     /// online-backup API.
     ///
     /// This is safe to call while the database is being read/written.
     ///
     /// # Errors
     ///
-    /// Returns [`MemzError::Database`] on SQLite failures, or
+    /// Returns [`MemzError::Database`] on `SQLite` failures, or
     /// [`MemzError::Io`] if the destination is not writable.
     pub fn backup<P: AsRef<Path>>(&self, dest_path: P) -> Result<()> {
         let start = Instant::now();
@@ -441,7 +440,7 @@ impl PersistenceEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`MemzError::Database`] on SQLite failures.
+    /// Returns [`MemzError::Database`] on `SQLite` failures.
     pub fn vacuum(&self) -> Result<()> {
         self.conn.execute_batch("VACUUM;")?;
         Ok(())

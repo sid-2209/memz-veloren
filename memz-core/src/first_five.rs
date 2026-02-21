@@ -76,6 +76,7 @@ pub struct SeedGossip {
 ///
 /// This creates a rich set of pre-existing memories that make the NPC
 /// feel like they've been living in the world for a while.
+#[must_use] 
 pub fn populate_seed_npc(
     template: &SeedNpcTemplate,
     npc_id: EntityId,

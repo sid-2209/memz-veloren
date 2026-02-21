@@ -71,6 +71,7 @@ impl RateLimiter {
 ///   - Length within limit
 ///   - No URLs or code patterns
 ///   - No excessive special characters
+#[must_use] 
 pub fn validate_injection_layer1(
     content: &str,
     config: &SafetyConfig,
@@ -136,6 +137,7 @@ pub fn validate_injection_layer1(
 ///
 /// This is a basic implementation. In production, this would use an ONNX
 /// toxicity classifier (Layer 2 from §21).
+#[must_use] 
 pub fn validate_profanity(
     content: &str,
     _profanity_level: &str,
@@ -154,6 +156,7 @@ pub fn validate_profanity(
 ///
 /// Layer 3: Semantic validation. In production, this uses a Tier 1 LLM call.
 /// This function provides the rule-based fallback.
+#[must_use] 
 pub fn validate_plausibility_rule_based(content: &str) -> SafetyVerdict {
     // Reject obvious game-breaking / meta-gaming claims.
     let rejected_patterns = [
@@ -172,8 +175,7 @@ pub fn validate_plausibility_rule_based(content: &str) -> SafetyVerdict {
         if lower.contains(pattern) {
             return SafetyVerdict::Rejected {
                 reason: format!(
-                    "Memory contains game-breaking claim: '{}'",
-                    pattern
+                    "Memory contains game-breaking claim: '{pattern}'"
                 ),
             };
         }

@@ -71,6 +71,7 @@ pub enum ConsolidationResult {
 ///
 /// Heuristic: If 3+ episodic memories share similar participants/location/theme,
 /// they can be distilled into a general fact.
+#[must_use] 
 pub fn consolidate_episodic_to_semantic(
     memories: &[EpisodicMemory],
     current_time: GameTimestamp,
@@ -86,7 +87,7 @@ pub fn consolidate_episodic_to_semantic(
     let common_participants: Vec<_> = first_participants
         .iter()
         .filter(|p| memories.iter().all(|m| m.participants.contains(p)))
-        .cloned()
+        .copied()
         .collect();
 
     // Compute average emotional valence.
@@ -94,7 +95,13 @@ pub fn consolidate_episodic_to_semantic(
         / memories.len() as f32;
 
     // Generate a summary fact.
-    let fact = if !common_participants.is_empty() {
+    let fact = if common_participants.is_empty() {
+        format!(
+            "After {} recent experiences, the general pattern seems to be {}.",
+            memories.len(),
+            if avg_valence > 0.0 { "positive" } else { "challenging" },
+        )
+    } else {
         let sentiment = if avg_valence > 0.3 {
             "generally positive"
         } else if avg_valence < -0.3 {
@@ -107,12 +114,6 @@ pub fn consolidate_episodic_to_semantic(
             memories.len(),
             common_participants[0],
             sentiment,
-        )
-    } else {
-        format!(
-            "After {} recent experiences, the general pattern seems to be {}.",
-            memories.len(),
-            if avg_valence > 0.0 { "positive" } else { "challenging" },
         )
     };
 
@@ -134,6 +135,7 @@ pub fn consolidate_episodic_to_semantic(
 ///
 /// If an NPC has performed the same type of action N times, they start
 /// developing a procedural memory for it.
+#[must_use] 
 pub fn consolidate_to_procedural(
     skill_name: &str,
     repetition_count: u32,
@@ -158,6 +160,7 @@ pub fn consolidate_to_procedural(
 /// Identify consolidation opportunities from a set of episodic memories.
 ///
 /// Returns a list of consolidation tasks ordered by priority.
+#[must_use] 
 pub fn identify_consolidation_tasks(
     episodic: &[EpisodicMemory],
     current_time: &GameTimestamp,
@@ -178,7 +181,7 @@ pub fn identify_consolidation_tasks(
     }
 
     // Create consolidation tasks for groups with 3+ memories.
-    for (_participant_id, memory_ids) in &participant_groups {
+    for memory_ids in participant_groups.values() {
         if memory_ids.len() >= 3 {
             tasks.push(ConsolidationTask {
                 source_type: MemoryType::Episodic,

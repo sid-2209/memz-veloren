@@ -48,8 +48,8 @@ impl HnswPoint {
 }
 
 impl Point for HnswPoint {
-    /// Cosine distance = 1 - cosine_similarity.
-    /// Since vectors are pre-normalized, cosine_similarity = dot product.
+    /// Cosine distance = 1 - `cosine_similarity`.
+    /// Since vectors are pre-normalized, `cosine_similarity` = dot product.
     fn distance(&self, other: &Self) -> f32 {
         if self.normalized.len() != other.normalized.len() {
             return 1.0; // Maximum distance for mismatched dimensions
@@ -96,17 +96,17 @@ pub struct HnswResult {
 pub struct HnswIndex {
     /// Pending (not yet indexed) points.
     pending_points: Vec<HnswPoint>,
-    /// Pending values (MemoryId).
+    /// Pending values (`MemoryId`).
     pending_values: Vec<MemoryId>,
     /// Built HNSW map (None until `build()` is called).
     map: Option<HnswMap<HnswPoint, MemoryId>>,
     /// Number of inserts since last build.
     dirty_count: usize,
-    /// ef_construction parameter (higher = more accurate build, slower).
+    /// `ef_construction` parameter (higher = more accurate build, slower).
     ef_construction: usize,
-    /// ef_search parameter (higher = more accurate search, slower).
+    /// `ef_search` parameter (higher = more accurate search, slower).
     ef_search: usize,
-    /// Threshold: auto-rebuild if dirty_count exceeds this fraction of total.
+    /// Threshold: auto-rebuild if `dirty_count` exceeds this fraction of total.
     auto_rebuild_threshold: f32,
 }
 
@@ -207,7 +207,7 @@ impl HnswIndex {
                 .search(&query_point, &mut search)
                 .take(k)
                 .map(|item| HnswResult {
-                    memory_id: item.value.clone(),
+                    memory_id: *item.value,
                     distance: item.distance,
                     similarity: 1.0 - item.distance,
                 })
@@ -295,9 +295,9 @@ pub struct HnswStats {
     pub dirty_count: usize,
     /// Whether the HNSW graph has been built.
     pub is_built: bool,
-    /// ef_construction parameter.
+    /// `ef_construction` parameter.
     pub ef_construction: usize,
-    /// ef_search parameter.
+    /// `ef_search` parameter.
     pub ef_search: usize,
 }
 

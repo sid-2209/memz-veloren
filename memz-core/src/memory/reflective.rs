@@ -52,18 +52,21 @@ impl ReflectiveMemory {
     }
 
     /// Add new beliefs discovered during reflection.
+    #[must_use] 
     pub fn with_beliefs(mut self, beliefs: Vec<String>) -> Self {
         self.new_beliefs = beliefs;
         self
     }
 
     /// Add questions that emerged during reflection.
+    #[must_use] 
     pub fn with_questions(mut self, questions: Vec<String>) -> Self {
         self.questions = questions;
         self
     }
 
     /// Set the mood shift resulting from this reflection.
+    #[must_use] 
     pub fn with_mood_shift(mut self, shift: PADState) -> Self {
         self.mood_shift = Some(shift);
         self

@@ -33,6 +33,7 @@ pub struct MemoryReplay {
 /// 2. Must still have sufficient strength (not faded)
 /// 3. Prefers emotionally significant memories
 /// 4. Prefers memories not recently replayed (novelty)
+#[must_use] 
 pub fn select_replay(
     bank: &MemoryBank,
     target: EntityId,

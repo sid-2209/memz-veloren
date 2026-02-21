@@ -88,6 +88,7 @@ pub enum ConflictState {
 /// - Episodic memories have contradictory valence about the same entity
 /// - Social memories contradict direct experience
 /// - Social memories from different sources contradict each other
+#[must_use] 
 pub fn detect_conflicts(
     bank: &MemoryBank,
     min_tension: f32,
@@ -135,17 +136,13 @@ fn detect_episodic_vs_social(
                     let (pos, neg) = if ev > 0.0 {
                         (
                             ConflictClaim {
-                                description: format!(
-                                    "Direct experience suggests positive interactions"
-                                ),
+                                description: "Direct experience suggests positive interactions".to_string(),
                                 source: ClaimSource::DirectExperience,
                                 confidence: ev.abs().min(1.0),
                                 corroboration_count: episodic_count_for(bank, entity),
                             },
                             ConflictClaim {
-                                description: format!(
-                                    "Gossip suggests negative reputation"
-                                ),
+                                description: "Gossip suggests negative reputation".to_string(),
                                 source: ClaimSource::Rumor { depth: 1 },
                                 confidence: sv.abs().min(1.0),
                                 corroboration_count: social_count_for(bank, entity),
@@ -154,17 +151,13 @@ fn detect_episodic_vs_social(
                     } else {
                         (
                             ConflictClaim {
-                                description: format!(
-                                    "Gossip suggests positive reputation"
-                                ),
+                                description: "Gossip suggests positive reputation".to_string(),
                                 source: ClaimSource::Rumor { depth: 1 },
                                 confidence: sv.abs().min(1.0),
                                 corroboration_count: social_count_for(bank, entity),
                             },
                             ConflictClaim {
-                                description: format!(
-                                    "Direct experience suggests negative interactions"
-                                ),
+                                description: "Direct experience suggests negative interactions".to_string(),
                                 source: ClaimSource::DirectExperience,
                                 confidence: ev.abs().min(1.0),
                                 corroboration_count: episodic_count_for(bank, entity),
@@ -271,18 +264,16 @@ pub fn attempt_resolution(
     }
 
     // Direct experience always wins over gossip
-    if matches!(conflict.positive_claim.source, ClaimSource::DirectExperience) {
-        if conflict.positive_claim.confidence > conflict.negative_claim.confidence * 1.5 {
+    if matches!(conflict.positive_claim.source, ClaimSource::DirectExperience)
+        && conflict.positive_claim.confidence > conflict.negative_claim.confidence * 1.5 {
             conflict.state = ConflictState::ResolvedPositive;
             return;
         }
-    }
-    if matches!(conflict.negative_claim.source, ClaimSource::DirectExperience) {
-        if conflict.negative_claim.confidence > conflict.positive_claim.confidence * 1.5 {
+    if matches!(conflict.negative_claim.source, ClaimSource::DirectExperience)
+        && conflict.negative_claim.confidence > conflict.positive_claim.confidence * 1.5 {
             conflict.state = ConflictState::ResolvedNegative;
             return;
         }
-    }
 
     // Corroboration count tips the scale
     let pos_weight = conflict.positive_claim.confidence

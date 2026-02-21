@@ -20,6 +20,14 @@
 //! Tier 3: Structured Output — All LLM calls use JSON/GBNF
 //! ```
 
+#![warn(clippy::pedantic)]
+#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+
 pub mod client;
 pub mod error;
 pub mod prompt;

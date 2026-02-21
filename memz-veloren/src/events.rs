@@ -1,6 +1,6 @@
 //! Game events that trigger memory creation (§12.2).
 //!
-//! These events are observed by the MemorySystem and converted
+//! These events are observed by the `MemorySystem` and converted
 //! into appropriate memory types.
 
 use memz_core::types::{EntityId, GameTimestamp, Location};

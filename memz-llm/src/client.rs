@@ -1,4 +1,4 @@
-//! LLM Client — unified interface for Ollama, OpenAI, and llama.cpp backends.
+//! LLM Client — unified interface for Ollama, `OpenAI`, and llama.cpp backends.
 
 use std::time::{Duration, Instant};
 
@@ -93,7 +93,7 @@ impl LlmClient {
             }
         };
 
-        let url = format!("{}/api/generate", base_url);
+        let url = format!("{base_url}/api/generate");
         let mut body = json!({
             "model": model,
             "prompt": format!("{}\n\n{}", request.system, request.user),
@@ -145,10 +145,9 @@ impl LlmClient {
                             latency_ms,
                             model: model.clone(),
                         });
-                    } else {
-                        last_error = format!("HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
-                        warn!("Ollama returned error: {}", last_error);
                     }
+                    last_error = format!("HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+                    warn!("Ollama returned error: {}", last_error);
                 }
                 Err(e) => {
                     last_error = e.to_string();
@@ -184,7 +183,7 @@ impl LlmClient {
             }
         };
 
-        let url = format!("{}/v1/chat/completions", base_url);
+        let url = format!("{base_url}/v1/chat/completions");
         let body = json!({
             "model": model,
             "messages": [
@@ -205,7 +204,7 @@ impl LlmClient {
             let result = self
                 .http
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Authorization", format!("Bearer {api_key}"))
                 .json(&body)
                 .timeout(Duration::from_millis(request.timeout_ms))
                 .send()
@@ -236,10 +235,9 @@ impl LlmClient {
                             latency_ms,
                             model: model.clone(),
                         });
-                    } else {
-                        last_error = format!("HTTP {}", resp.status());
-                        warn!("OpenAI API returned error: {}", last_error);
                     }
+                    last_error = format!("HTTP {}", resp.status());
+                    warn!("OpenAI API returned error: {}", last_error);
                 }
                 Err(e) => {
                     last_error = e.to_string();

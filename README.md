@@ -86,10 +86,12 @@ frame_budget_ms = 2.0
 
 ## 🧪 Test Suite
 
-- **189 tests** across 4 crates (unit, integration, property-based)
+- **202 tests** across 4 crates (unit, integration, property-based, golden eval)
 - **15 property-based tests** via `proptest` (memory invariant verification)
 - **8 integration tests** (full lifecycle, gossip chains, storage budgets)
+- **5 golden eval tests** (LLM prompt quality validation)
 - **9 criterion benchmarks** with CI budget enforcement
+- **Zero clippy warnings** (`clippy::pedantic` enabled)
 
 ## 🧪 Cognitive Science Foundation
 

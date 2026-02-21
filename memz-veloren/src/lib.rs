@@ -27,10 +27,24 @@
 //!
 //! ## Modules
 //!
-//! - `components` — ECS components (MemoryBank wrapper, MemoryConfig, MemoryStats)
+//! - `components` — ECS components (`MemoryBank` wrapper, `MemoryConfig`, `MemoryStats`)
 //! - `systems` — ECS systems (observation, decay, reflection, propagation)
 //! - `events` — Game event types that trigger memory creation
 //! - `hooks` — Integration points with Veloren's existing systems
+
+#![warn(clippy::pedantic)]
+#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::used_underscore_binding)]
+#![allow(clippy::field_reassign_with_default)]
 
 pub mod bridge;
 pub mod components;

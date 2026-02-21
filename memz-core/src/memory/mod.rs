@@ -1,4 +1,4 @@
-//! Memory type definitions and the MemoryBank aggregate.
+//! Memory type definitions and the `MemoryBank` aggregate.
 //!
 //! This module contains all 7 memory types from the MEMZ taxonomy (§8),
 //! plus the [`MemoryBank`] that aggregates them per-character.

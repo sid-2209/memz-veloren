@@ -6,7 +6,7 @@
 //! Reflection is a Tier 2 LLM operation (async, non-blocking):
 //!   - Runs periodically (configurable interval, default: every 5 game-minutes)
 //!   - Takes the N most recent/important episodic memories as input
-//!   - Produces ReflectiveMemory outputs with beliefs, questions, mood shifts
+//!   - Produces `ReflectiveMemory` outputs with beliefs, questions, mood shifts
 //!   - Falls back to rule-based summarisation if LLM is unavailable
 //!
 //! Grounded in Flavell's metacognition theory (1979).

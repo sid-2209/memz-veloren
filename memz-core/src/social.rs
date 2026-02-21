@@ -38,7 +38,7 @@ pub enum PropagationResult {
     },
 }
 
-/// Belief update thresholds (configurable via MemzConfig).
+/// Belief update thresholds (configurable via `MemzConfig`).
 const BELIEF_THRESHOLD: f32 = 0.5;
 const HYSTERESIS: f32 = 0.05;
 
@@ -56,6 +56,7 @@ const HYSTERESIS: f32 = 0.05;
 /// * `receiver_emotional_state_toward_subject` — Receiver's current emotional state toward the claim's subject (-1.0 to 1.0).
 /// * `source_reliability` — Track record of the source's past claims (0.0–1.0).
 /// * `current_time` — Current game timestamp.
+#[must_use] 
 pub fn propagate_memory(
     claim: &SocialMemory,
     _receiver_id: EntityId,
@@ -131,8 +132,7 @@ pub fn propagate_memory(
     } else if belief < BELIEF_THRESHOLD - HYSTERESIS {
         PropagationResult::Rejected {
             reason: format!(
-                "Belief score too low: {:.2} (threshold: {})",
-                belief, BELIEF_THRESHOLD
+                "Belief score too low: {belief:.2} (threshold: {BELIEF_THRESHOLD})"
             ),
         }
     } else {
@@ -170,7 +170,7 @@ pub fn is_propagatable(memory: &SocialMemory) -> bool {
 
 /// Compute trust decay over time (trust erodes slowly without reinforcement).
 ///
-/// trust_new = trust × e^(-decay_rate × days)
+/// `trust_new` = trust × e^(-decay_rate × days)
 #[must_use]
 pub fn decay_trust(current_trust: f32, days_without_interaction: f32, decay_rate: f32) -> f32 {
     (current_trust * (-decay_rate * days_without_interaction).exp()).clamp(0.0, 1.0)

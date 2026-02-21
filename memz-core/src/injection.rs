@@ -125,7 +125,7 @@ pub fn inject_memory(
         }
         Err(e) => {
             return InjectionResult::Rejected {
-                reason: format!("Safety check error: {}", e),
+                reason: format!("Safety check error: {e}"),
             };
         }
     }

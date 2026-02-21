@@ -78,6 +78,7 @@ impl EpisodicMemory {
     }
 
     /// Mark this as a first-meeting memory (protected from eviction).
+    #[must_use] 
     pub fn with_first_meeting(mut self) -> Self {
         self.is_first_meeting = true;
         self

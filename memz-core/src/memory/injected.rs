@@ -95,12 +95,14 @@ impl InjectedMemory {
     }
 
     /// Add NPCs who know about this memory.
+    #[must_use] 
     pub fn with_known_npcs(mut self, npcs: Vec<EntityId>) -> Self {
         self.known_to_npcs = npcs;
         self
     }
 
     /// Add tags for categorisation.
+    #[must_use] 
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self

@@ -56,7 +56,7 @@ impl ProficiencyLevel {
 pub struct ProceduralMemory {
     /// Unique identifier.
     pub id: MemoryId,
-    /// Skill name (e.g. "sword_fighting", "cooking_stew", "bargaining").
+    /// Skill name (e.g. "`sword_fighting`", "`cooking_stew`", "bargaining").
     pub skill: String,
     /// Current proficiency (0.0 to 1.0).
     pub proficiency: f32,

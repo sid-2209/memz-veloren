@@ -85,7 +85,7 @@ impl HardwareProfile {
     #[must_use]
     pub fn auto_detect() -> Self {
         let cpu_count = std::thread::available_parallelism()
-            .map(|n| n.get())
+            .map(std::num::NonZero::get)
             .unwrap_or(4);
 
         if cpu_count >= 12 {

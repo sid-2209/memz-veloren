@@ -63,6 +63,7 @@ pub enum DispositionBasis {
 ///
 /// # Performance
 /// Target: < 0.1ms
+#[must_use] 
 pub fn compute_disposition(
     bank: &MemoryBank,
     target: EntityId,
@@ -142,8 +143,7 @@ fn compute_direct_sentiment(
     // Emotional memory sentiment (latest PAD state)
     let emotional_sentiment = relevant_emotional
         .last()
-        .map(|m| m.intensity * if m.pad_state.pleasure > 0.0 { 1.0 } else { -1.0 })
-        .unwrap_or(0.0);
+        .map_or(0.0, |m| m.intensity * if m.pad_state.pleasure > 0.0 { 1.0 } else { -1.0 });
 
     let positive = relevant_episodic
         .iter()
@@ -327,6 +327,7 @@ pub fn check_quest_eligibility(
 ///
 /// Returns up to `max_count` social memories suitable for sharing,
 /// sorted by gossip priority.
+#[must_use] 
 pub fn select_gossip(
     bank: &MemoryBank,
     listener: EntityId,

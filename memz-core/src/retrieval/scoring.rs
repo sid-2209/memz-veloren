@@ -4,10 +4,10 @@
 //!
 //! Where:
 //!   Recency(m)    = exp(-λ · ΔT)        (Ebbinghaus forgetting curve)
-//!   Relevance(m)  = cosine_similarity(context_embedding, memory_embedding)
+//!   Relevance(m)  = `cosine_similarity(context_embedding`, `memory_embedding`)
 //!   Importance(m)  = pre-computed importance score (0–1)
-//!   Emotional(m)  = |emotional_valence| × emotional_volatility
-//!   Social(m)     = trust_in_source × recency_of_social_transmission
+//!   Emotional(m)  = |`emotional_valence`| × `emotional_volatility`
+//!   Social(m)     = `trust_in_source` × `recency_of_social_transmission`
 
 use crate::memory::MemoryEntry;
 use crate::retrieval::ScoreBreakdown;
@@ -17,6 +17,7 @@ use crate::types::{Embedding, GameTimestamp};
 const DEFAULT_DECAY_LAMBDA: f64 = 0.05;
 
 /// Compute the full score breakdown for a single memory.
+#[must_use] 
 pub fn compute_breakdown(
     memory: &MemoryEntry,
     context_embedding: &Embedding,
@@ -104,7 +105,7 @@ fn importance_score(memory: &MemoryEntry) -> f64 {
     f64::from(raw.clamp(0.0, 1.0))
 }
 
-/// Emotional score: |emotional_valence| × volatility factor.
+/// Emotional score: |`emotional_valence`| × volatility factor.
 ///
 /// Strong emotions are more memorable (flashbulb memory effect — Brown & Kulik, 1977).
 fn emotional_score(memory: &MemoryEntry) -> f64 {
@@ -117,7 +118,7 @@ fn emotional_score(memory: &MemoryEntry) -> f64 {
     }
 }
 
-/// Social score: trust_in_source × chain depth discount.
+/// Social score: `trust_in_source` × chain depth discount.
 ///
 /// First-hand > second-hand > rumor (with Dunbar-informed decay).
 fn social_score(memory: &MemoryEntry) -> f64 {

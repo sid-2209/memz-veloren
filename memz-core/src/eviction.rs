@@ -29,7 +29,7 @@ pub enum Ring {
     Hot,
     /// In-memory, slightly older memories.
     Warm,
-    /// Persisted to SQLite, oldest still-retained memories.
+    /// Persisted to `SQLite`, oldest still-retained memories.
     Cold,
     /// Beyond cold threshold — eligible for deletion.
     Archive,
@@ -126,7 +126,7 @@ pub fn eviction_score(
 pub struct EvictionResult {
     /// Memories that remain in-memory (Hot + Warm).
     pub retained: Vec<EpisodicMemory>,
-    /// Memories that should be moved to cold storage (SQLite).
+    /// Memories that should be moved to cold storage (`SQLite`).
     pub to_cold_storage: Vec<EpisodicMemory>,
     /// Memories that should be permanently deleted (Archive).
     pub to_archive: Vec<EpisodicMemory>,
@@ -140,6 +140,7 @@ pub struct EvictionResult {
 ///
 /// `ticks_per_hour` is the game-specific conversion factor (Veloren
 /// uses ~7200 ticks/hour at 30 TPS).
+#[must_use] 
 pub fn evict_episodic_memories(
     memories: Vec<EpisodicMemory>,
     current_tick: u64,
@@ -202,6 +203,7 @@ pub fn evict_episodic_memories(
 /// Social memories don't have `is_first_meeting` or `last_accessed`
 /// timestamps in the same way, so we use `received_at` as the age proxy
 /// and `trust_in_source` as the importance proxy.
+#[must_use] 
 pub fn evict_social_memories(
     memories: Vec<SocialMemory>,
     current_tick: u64,

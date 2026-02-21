@@ -193,8 +193,7 @@ impl ReputationBoard {
     #[must_use]
     pub fn get_tier(&self, entity: EntityId) -> ReputationTier {
         self.get_reputation(entity)
-            .map(|e| e.tier)
-            .unwrap_or(ReputationTier::Neutral)
+            .map_or(ReputationTier::Neutral, |e| e.tier)
     }
 
     /// Decay all reputations toward neutral over time.
@@ -218,6 +217,7 @@ impl ReputationBoard {
     }
 
     /// Get the top N most reputed entities (positive).
+    #[must_use] 
     pub fn top_heroes(&self, count: usize) -> Vec<&ReputationEntry> {
         let mut sorted: Vec<&ReputationEntry> = self.entries.iter().collect();
         sorted.sort_by(|a, b| {
@@ -230,6 +230,7 @@ impl ReputationBoard {
     }
 
     /// Get the top N most notorious entities (negative).
+    #[must_use] 
     pub fn top_villains(&self, count: usize) -> Vec<&ReputationEntry> {
         let mut sorted: Vec<&ReputationEntry> = self.entries.iter().collect();
         sorted.sort_by(|a, b| {
