@@ -1,0 +1,72 @@
+[package]
+name = "memz-voice"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+
+[dependencies]
+# Audio I/O
+cpal = "0.15"
+hound = "3.5"
+
+# Speech-to-Text (Whisper via whisper.cpp)
+whisper-rs = "0.12"
+
+# LLM Inference — Ollama HTTP API (async, streaming)
+reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["rt", "macros"] }
+
+# Optional: In-process llama.cpp (currently blocked by GGUF tensor duplication bug)
+# Uncomment when llama-cpp-sys-2 fixes the token_embd.weight duplication issue
+# llama-cpp-2 = "=0.1.140"
+
+# Async & channels (inter-thread communication)
+crossbeam-channel = "0.5"
+
+# Utilities
+anyhow = "1.0"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.11"
+encoding_rs = "0.8"
+
+# === OPTIONAL ML DEPENDENCIES ===
+# Kokoro TTS: kokoroxide has yanked ort deps — using placeholder TTS for now.
+# Will integrate when ort crate versions stabilize.
+# kokoroxide = { version = "0.1", optional = true }
+
+[[example]]
+name = "test_stt"
+path = "examples/test_stt.rs"
+
+[[example]]
+name = "test_tts"
+path = "examples/test_tts.rs"
+
+[[example]]
+name = "test_llm"
+path = "examples/test_llm.rs"
+
+[[example]]
+name = "test_full"
+path = "examples/test_full.rs"
+
+[[example]]
+name = "list_audio_devices"
+path = "examples/list_audio_devices.rs"
+
+[[example]]
+name = "test_microphone"
+path = "examples/test_microphone.rs"
+
+[[example]]
+name = "test_llm_auto"
+path = "examples/test_llm_auto.rs"
+
+[[example]]
+name = "test_e2e_voice"
+path = "examples/test_e2e_voice.rs"

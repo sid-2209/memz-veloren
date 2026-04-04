@@ -190,6 +190,17 @@ impl Personality {
         self.agreeableness < Self::LOW_THRESHOLD && self.conscientiousness < Self::LOW_THRESHOLD
     }
 
+    /// Raw OCEAN trait values (0–255) for external systems like MEMZ.
+    pub fn openness_raw(&self) -> u8 { self.openness }
+
+    pub fn conscientiousness_raw(&self) -> u8 { self.conscientiousness }
+
+    pub fn extraversion_raw(&self) -> u8 { self.extraversion }
+
+    pub fn agreeableness_raw(&self) -> u8 { self.agreeableness }
+
+    pub fn neuroticism_raw(&self) -> u8 { self.neuroticism }
+
     pub fn get_generic_comment(&self, rng: &mut impl Rng) -> Content {
         let i18n_key = if let Some(extreme_trait) = self.chat_trait(rng) {
             match extreme_trait {

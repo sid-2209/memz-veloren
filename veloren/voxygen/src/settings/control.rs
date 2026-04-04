@@ -159,7 +159,7 @@ impl ControlSettings {
             GameInput::CancelClimb => Key::Named(NamedKey::Shift),
             GameInput::ToggleLantern => char("G"),
             GameInput::Mount => char("F"),
-            GameInput::StayFollow => char("V"),
+            GameInput::StayFollow => return None, // unbound — conflicts with VoiceTalk (V)
             GameInput::Map => char("M"),
             GameInput::Inventory => char("I"),
             GameInput::Trade => char("T"),
@@ -216,6 +216,7 @@ impl ControlSettings {
             GameInput::MuteSfx => return None,
             GameInput::MuteAmbience => return None,
             GameInput::ToggleWalk => char("B"),
+            GameInput::VoiceTalk => char("V"),
         }))
     }
 }

@@ -55,3 +55,7 @@ pub mod hooks;
 pub mod memory_rule;
 pub mod rtsim_adapter;
 pub mod systems;
+pub mod voice_system;
+
+// Re-export voice system for easy access
+pub use voice_system::{VoiceSystem, VelorenNpcData, VoiceDisplayState, VoiceGameEvent};

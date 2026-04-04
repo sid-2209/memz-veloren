@@ -144,6 +144,11 @@ key = "veloren-nix.cachix.org-1:zokfKJqVsNV6kI/oJdLF6TYBdNPYGSb+diMVQPn/5Rc="
 ### DEPENDENCIES ###
 
 [workspace.dependencies]
+# MEMZ — Persistent memory layer for game characters
+memz-core = { path = "../memz-core" }
+memz-llm = { path = "../memz-llm" }
+memz-veloren = { path = "../memz-veloren" }
+
 ahash = { version = "0.8" }
 async-trait = "0.1.42"
 atomic_refcell = "0.1.13"

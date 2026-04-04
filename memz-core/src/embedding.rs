@@ -144,8 +144,8 @@ impl RandomEmbeddingProvider {
 impl EmbeddingProvider for RandomEmbeddingProvider {
     fn embed(&self, _text: &str) -> Result<Embedding> {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let raw: Vec<f32> = (0..self.dims).map(|_| rng.gen_range(-1.0..1.0)).collect();
+        let mut rng = rand::rng();
+        let raw: Vec<f32> = (0..self.dims).map(|_| rng.random_range(-1.0..1.0)).collect();
 
         // L2-normalize
         let mag: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();

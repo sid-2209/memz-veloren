@@ -63,6 +63,9 @@ i18n = { package = "veloren-client-i18n", path = "../client/i18n" }
 i18n-helpers = { package = "veloren-voxygen-i18n-helpers", path = "i18n-helpers" }
 voxygen-egui = { package = "veloren-voxygen-egui", path = "egui", optional = true }
 
+# MEMZ Voice Integration
+memz-veloren = { path = "../../memz-veloren" }
+
 # Graphics
 winit = { version = "0.30.12", features = ["serde"] }
 wgpu = { version = "27", features = ["spirv", "glsl"] }

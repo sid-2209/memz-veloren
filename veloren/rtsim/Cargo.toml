@@ -10,6 +10,9 @@ workspace = true
 [dependencies]
 common = { package = "veloren-common", path = "../common" }
 world = { package = "veloren-world", path = "../world" }
+memz-core = { workspace = true }
+memz-veloren = { workspace = true }
+parking_lot = "0.12"
 serde = { workspace = true }
 hashbrown = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }

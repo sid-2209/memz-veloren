@@ -153,6 +153,10 @@ impl Sentiment {
 
     fn value(&self) -> f32 { self.positivity as f32 * (1.0 / 126.0) }
 
+    /// Public accessor for the sentiment value (range -1.0..1.0).
+    /// Used by external systems like MEMZ for memory-aware behaviour.
+    pub fn positivity_value(&self) -> f32 { self.value() }
+
     /// Change the sentiment toward the given target by the given amount,
     /// capping out at the given value.
     pub fn change_by(&mut self, change: f32, cap: f32) {

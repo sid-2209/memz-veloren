@@ -9,6 +9,10 @@ description = "Veloren integration for MEMZ — ECS components, systems, hooks"
 [dependencies]
 memz-core = { path = "../memz-core" }
 memz-llm = { path = "../memz-llm" }
+memz-voice = { path = "../memz-voice" }
 serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+log = "0.4"
+anyhow = "1.0"
+env_logger = "0.11"

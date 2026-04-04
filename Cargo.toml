@@ -5,6 +5,7 @@ members = [
     "memz-llm",
     "memz-veloren",
     "memz-bench",
+    "memz-voice",
 ]
 
 [workspace.package]
@@ -26,7 +27,7 @@ rmp-serde = "1"
 toml = "0.8"
 
 # Database & Storage
-rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 
 # Async Runtime
 tokio = { version = "1", features = ["full"] }
@@ -45,8 +46,8 @@ anyhow = "1"
 # Collections & Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-ordered-float = { version = "4", features = ["serde"] }
-rand = "0.8"
+ordered-float = { version = "5", features = ["serde"] }
+rand = "0.9"
 parking_lot = "0.12"
 dashmap = "6"
 lru = "0.12"

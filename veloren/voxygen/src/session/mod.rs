@@ -11,6 +11,7 @@ use ordered_float::OrderedFloat;
 use specs::WorldExt;
 use tracing::{error, info};
 use vek::*;
+use memz_veloren::{VoiceSystem, VelorenNpcData, VoiceGameEvent};
 
 use client::{self, Client};
 use common::{
@@ -124,6 +125,9 @@ pub struct SessionState {
     lines: PlayerDebugLines,
     tracks: HashMap<Vec2<i32>, Vec<DebugShapeId>>,
     gizmos: Vec<(DebugShapeId, common::resources::Time, bool)>,
+    // Voice system for NPC dialogue
+    voice_system: Option<VoiceSystem>,
+    active_voice_sfx: Option<crate::audio::SfxHandle>,
 }
 
 /// Represents an active game session (i.e., the one being played).
@@ -200,6 +204,8 @@ impl SessionState {
             tracks: HashMap::new(),
             lines: Default::default(),
             gizmos: Vec::new(),
+            voice_system: Some(VoiceSystem::new()),
+            active_voice_sfx: None,
         }
     }
 
@@ -807,6 +813,173 @@ impl PlayState for SessionState {
                     Event::InputUpdate(input, state)
                         if state != self.inputs_state.contains(&input) =>
                     {
+                        // Handle voice talk input (PTT key)
+                        if input == GameInput::VoiceTalk {
+                            if state {
+                                // V key pressed — start voice recording
+                                // Stop any actively playing voice response
+                                if let Some(handle) = self.active_voice_sfx.take() {
+                                    global_state.audio.stop_sfx(&handle);
+                                }
+                                
+                                // Prefer crosshair target; fall back to nearest NPC
+                                // within interaction range (player may not be aiming).
+                                let npc_entity = if let Some(e) = self.target_entity {
+                                    Some(e)
+                                } else {
+                                    // Search for the nearest entity that has an Agent
+                                    // component (i.e. is an NPC, not the player).
+                                    let client = self.client.borrow();
+                                    let ecs = client.state().ecs();
+                                    let my_entity = client.entity();
+                                    let positions = ecs.read_storage::<comp::Pos>();
+                                    let agents   = ecs.read_storage::<comp::Agent>();
+                                    let grid     = ecs.read_resource::<CachedSpatialGrid>();
+                                    positions.get(my_entity).map(|p| p.0).and_then(|player_pos| {
+                                        grid.0
+                                            .in_circle_aabr(player_pos.xy(), MAX_MOUNT_RANGE)
+                                            .filter(|e| {
+                                                *e != my_entity
+                                                    && agents.get(*e).is_some()
+                                                    && positions.get(*e).is_some()
+                                            })
+                                            .min_by_key(|e| {
+                                                positions.get(*e)
+                                                    .map(|p| OrderedFloat((p.0 - player_pos).magnitude()))
+                                                    .unwrap_or(OrderedFloat(f32::MAX))
+                                            })
+                                    })
+                                    // borrows dropped here — entity is Copy
+                                };
+
+                                // Extract NPC data from the targeted entity
+                                if let Some(target_entity) = npc_entity {
+                                    let client = self.client.borrow();
+                                    let ecs = client.state().ecs();
+                                    let stats = ecs.read_storage::<comp::Stats>();
+                                    let positions = ecs.read_storage::<comp::Pos>();
+                                    let bodies = ecs.read_storage::<comp::Body>();
+                                    let agents = ecs.read_storage::<comp::Agent>();
+
+                                    let npc_name = stats.get(target_entity)
+                                        .map(|s| global_state.i18n.read().get_content(&s.name))
+                                        .unwrap_or_else(|| "Traveler".to_string());
+
+                                    let npc_pos = positions.get(target_entity)
+                                        .map(|p| [p.0.x, p.0.y, p.0.z])
+                                        .unwrap_or([0.0; 3]);
+
+                                    // Infer profession from name (Veloren NPC names often
+                                    // reflect their role) and body type
+                                    let profession = infer_npc_profession(&npc_name, bodies.get(target_entity));
+
+                                    // Extract OCEAN personality traits from Agent component
+                                    let (extraversion, neuroticism, agreeableness, personality_desc) =
+                                        agents.get(target_entity)
+                                            .map(|agent| {
+                                                let p = &agent.rtsim_controller.personality;
+                                                let e = p.extraversion_raw() as f32 / 255.0;
+                                                let n = p.neuroticism_raw() as f32 / 255.0;
+                                                let a = p.agreeableness_raw() as f32 / 255.0;
+                                                let o = p.openness_raw() as f32 / 255.0;
+                                                let c = p.conscientiousness_raw() as f32 / 255.0;
+                                                let desc = build_personality_desc(e, n, a, o, c);
+                                                (e, n, a, desc)
+                                            })
+                                            .unwrap_or((0.5, 0.3, 0.6, "A friendly resident of this world".to_string()));
+
+                                    // Mood based on neuroticism + agreeableness
+                                    let mood = if neuroticism > 0.7 {
+                                        "anxious"
+                                    } else if agreeableness > 0.7 {
+                                        "cheerful"
+                                    } else if agreeableness < 0.3 {
+                                        "gruff"
+                                    } else {
+                                        "neutral"
+                                    };
+
+                                    // Player sentiment based on agreeableness
+                                    let player_sentiment = if agreeableness > 0.6 {
+                                        "a welcome visitor"
+                                    } else if agreeableness < 0.3 {
+                                        "a stranger to be wary of"
+                                    } else {
+                                        "an unknown traveler"
+                                    };
+
+                                    // Try to get the actual site name from the world map markers
+                                    let location = {
+                                        let client = self.client.borrow();
+                                        let npc_wpos = vek::Vec2::new(npc_pos[0], npc_pos[1]);
+                                        client.sites().values()
+                                            .filter_map(|site| {
+                                                let dist = (site.marker.wpos - npc_wpos).magnitude_squared();
+                                                // Find the nearest named site within 1500 blocks
+                                                if dist < 1500.0 * 1500.0 {
+                                                    site.marker.label.as_ref().map(|label| {
+                                                        (ordered_float::OrderedFloat(dist),
+                                                         global_state.i18n.read().get_content(label))
+                                                    })
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .min_by_key(|(dist, _)| *dist)
+                                            .map(|(_, name)| name)
+                                            .unwrap_or_else(|| "this settlement".to_string())
+                                    };
+
+                                    // Build profession-specific knowledge for richer NPC context
+                                    let knowledge = build_npc_knowledge(&profession, &npc_name, &location);
+
+                                    let npc_data = VelorenNpcData {
+                                        entity_id: target_entity.id() as u64,
+                                        name: npc_name.clone(),
+                                        profession,
+                                        location,
+                                        faction: String::new(),
+                                        personality_description: personality_desc,
+                                        mood: mood.to_string(),
+                                        player_sentiment: player_sentiment.to_string(),
+                                        extraversion,
+                                        neuroticism,
+                                        position: npc_pos,
+                                        knowledge,
+                                    };
+
+                                    drop(stats);
+                                    drop(positions);
+                                    drop(bodies);
+                                    drop(agents);
+                                    drop(client);
+
+                                    if let Some(voice_system) = &mut self.voice_system {
+                                        tracing::info!("🎤 Voice recording started with NPC: {}", npc_name);
+                                        if let Err(e) = voice_system.start_interaction(&npc_data) {
+                                            tracing::error!("Voice start error: {}", e);
+                                        } else {
+                                            self.hud.clear_voice_conversation();
+                                            global_state.audio.set_conversation_ducking(true);
+                                        }
+                                    }
+                                } else {
+                                    self.hud.new_message(comp::ChatType::Meta.into_plain_msg(
+                                        "🎤 No NPC nearby — walk closer to an NPC, then hold V".to_string(),
+                                    ));
+                                }
+                            } else {
+                                // V key released — stop recording
+                                if let Some(voice_system) = &mut self.voice_system {
+                                    if voice_system.is_active() {
+                                        if let Err(e) = voice_system.stop_recording() {
+                                            tracing::error!("Voice stop error: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         if !self.inputs_state.insert(input) {
                             self.inputs_state.remove(&input);
                         }
@@ -1746,6 +1919,74 @@ impl PlayState for SessionState {
 
             let inverted_interactable_map = self.interactables.inverted_map();
 
+            // ── Voice system: poll events every frame ──────────────
+            if let Some(voice_system) = &mut self.voice_system {
+                // Update HUD visual indicator text based on current state
+                self.hud.voice_display_text = match voice_system.display_state() {
+                    memz_veloren::VoiceDisplayState::Hidden => None,
+                    memz_veloren::VoiceDisplayState::Listening => Some("🎤 Listening... (Release V to send)".to_string()),
+                    memz_veloren::VoiceDisplayState::Processing => Some("⏳ Transcribing speech...".to_string()),
+                    memz_veloren::VoiceDisplayState::Thinking => Some(format!("🤔 NPC is thinking...")),
+                    memz_veloren::VoiceDisplayState::Speaking => Some("🗣️ NPC is speaking".to_string()),
+                    memz_veloren::VoiceDisplayState::Error(msg) => Some(format!("❌ Voice Error: {}", msg)),
+                };
+
+                for voice_event in voice_system.update() {
+                    match voice_event {
+                        VoiceGameEvent::PlayerTranscription(text) => {
+                            self.hud.push_user_voice_line(text);
+                        }
+                        VoiceGameEvent::NpcResponseText { npc_name, text, .. } => {
+                            self.hud.push_npc_voice_line(&npc_name, text);
+                        }
+                        VoiceGameEvent::NpcAudioChunk { audio, position, .. } => {
+                            if let Some(handle) = self.active_voice_sfx.take() {
+                                global_state.audio.stop_sfx(&handle);
+                            }
+
+                            let emitter_pos = Vec3::new(position[0], position[1], position[2]);
+                            let sample_count = audio.len();
+                            self.active_voice_sfx = global_state.audio.emit_voice_audio(&audio, emitter_pos);
+                            if self.active_voice_sfx.is_some() {
+                                tracing::info!("🔊 Playing voice audio chunk ({} samples, {:.1}s)", sample_count, sample_count as f32 / 24000.0);
+                            } else {
+                                tracing::warn!("🔇 Voice audio chunk failed to play ({} samples) — SFX may be disabled or no channel available", sample_count);
+                            }
+                        }
+                        VoiceGameEvent::NpcAudioComplete { .. } => {
+                            tracing::debug!("Voice audio playback complete");
+                        }
+                        VoiceGameEvent::InteractionComplete => {
+                            tracing::info!("Voice interaction complete");
+                        }
+                        VoiceGameEvent::Error(msg) => {
+                            // Show user-facing errors; filter internal pipeline noise
+                            if msg.starts_with("mic_silent:") {
+                                // Microphone silence — show actionable help
+                                let hint = msg.trim_start_matches("mic_silent:").trim();
+                                self.hud.new_message(comp::ChatType::Meta.into_plain_msg(
+                                    format!("🎤 {}", hint),
+                                ));
+                            } else if !msg.contains("Ollama") && !msg.contains("TTS") {
+                                // Show other user-relevant errors but not internal service errors
+                                self.hud.new_message(comp::ChatType::Meta.into_plain_msg(
+                                    format!("❌ Voice: {}", &msg[..msg.len().min(120)]),
+                                ));
+                            } else {
+                                tracing::warn!("Voice pipeline error: {}", msg);
+                            }
+                        }
+                    }
+                }
+
+                global_state
+                    .audio
+                    .set_conversation_ducking(voice_system.is_active());
+            } else {
+                self.hud.voice_display_text = None;
+                global_state.audio.set_conversation_ducking(false);
+            }
+
             // Extract HUD events ensuring the client borrow gets dropped.
             let mut hud_events = self.hud.maintain(
                 &self.client.borrow(),
@@ -2420,6 +2661,159 @@ impl PlayState for SessionState {
     }
 
     fn egui_enabled(&self) -> bool { true }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Voice NPC helper functions
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Infer NPC profession from their display name and body type.
+///
+/// Veloren NPC names often encode their role (e.g. "Guard", "Merchant").
+/// The body type provides additional hints.
+fn infer_npc_profession(name: &str, body: Option<&comp::Body>) -> String {
+    let name_lower = name.to_lowercase();
+
+    // Check name for profession keywords
+    let profession_from_name = [
+        ("guard", "Guard"),
+        ("merchant", "Merchant"),
+        ("trader", "Merchant"),
+        ("vendor", "Merchant"),
+        ("blacksmith", "Blacksmith"),
+        ("smith", "Blacksmith"),
+        ("herbalist", "Herbalist"),
+        ("healer", "Herbalist"),
+        ("alchemist", "Alchemist"),
+        ("chef", "Chef"),
+        ("cook", "Chef"),
+        ("farmer", "Farmer"),
+        ("hunter", "Hunter"),
+        ("captain", "Captain"),
+        ("pirate", "Pirate"),
+        ("adventurer", "Adventurer"),
+        ("cultist", "Cultist"),
+        ("wizard", "Alchemist"),
+        ("archer", "Hunter"),
+    ]
+    .iter()
+    .find(|(keyword, _)| name_lower.contains(keyword))
+    .map(|(_, prof)| prof.to_string());
+
+    if let Some(prof) = profession_from_name {
+        return prof;
+    }
+
+    // Fall back to body type heuristics
+    match body {
+        Some(comp::Body::Humanoid(_)) => "Villager".to_string(),
+        Some(comp::Body::BirdMedium(_)) | Some(comp::Body::BirdLarge(_)) => "Creature".to_string(),
+        Some(comp::Body::Dragon(_)) => "Dragon".to_string(),
+        Some(comp::Body::Ship(_)) => "Captain".to_string(),
+        _ => "Resident".to_string(),
+    }
+}
+
+/// Build a human-readable personality description from OCEAN trait values (0.0–1.0).
+fn build_personality_desc(
+    extraversion: f32,
+    neuroticism: f32,
+    agreeableness: f32,
+    openness: f32,
+    conscientiousness: f32,
+) -> String {
+    let mut traits = Vec::new();
+
+    if extraversion > 0.7 {
+        traits.push("outgoing and talkative");
+    } else if extraversion < 0.3 {
+        traits.push("quiet and reserved");
+    }
+
+    if agreeableness > 0.7 {
+        traits.push("warm and cooperative");
+    } else if agreeableness < 0.3 {
+        traits.push("blunt and self-interested");
+    }
+
+    if conscientiousness > 0.7 {
+        traits.push("diligent and reliable");
+    } else if conscientiousness < 0.3 {
+        traits.push("carefree and impulsive");
+    }
+
+    if openness > 0.7 {
+        traits.push("curious and open to ideas");
+    } else if openness < 0.3 {
+        traits.push("traditional and set in their ways");
+    }
+
+    if neuroticism > 0.7 {
+        traits.push("easily worried and sensitive");
+    } else if neuroticism < 0.3 {
+        traits.push("calm and emotionally stable");
+    }
+
+    if traits.is_empty() {
+        "balanced and adaptable".to_string()
+    } else {
+        traits.join(", ")
+    }
+}
+
+/// Build profession-specific knowledge context for the LLM system prompt.
+///
+/// This grounds each NPC in Veloren's world with information relevant to their
+/// role, making responses feel specific and lifelike rather than generic.
+fn build_npc_knowledge(profession: &str, _name: &str, location: &str) -> String {
+    match profession.to_lowercase().as_str() {
+        "guard" | "town guard" | "soldier" => format!(
+            "You protect {} and its people. You patrol the walls and market district. \
+             You've seen adventurers come and go — some trustworthy, many not. \
+             You know about recent bandit activity on the roads south. \
+             Your main concerns: keeping the peace, watching for suspicious strangers, \
+             and making sure no weapons are drawn within the settlement.",
+            location
+        ),
+        "merchant" | "trader" | "shopkeeper" => format!(
+            "You run a trading post in {}. You deal in goods from multiple settlements — \
+             weapons, tools, food, and rare items brought by adventurers. \
+             Trade routes have been dangerous lately due to creatures on the roads. \
+             You're always looking to buy interesting items and sell quality goods. \
+             You know the local economy and what people need most.",
+            location
+        ),
+        "blacksmith" | "weaponsmith" | "armorsmith" => format!(
+            "You forge and repair weapons and armor in {}. Your craft is your pride. \
+             You know the quality of metal and can tell a finely-made sword from junk. \
+             Adventurers often bring you salvaged equipment to repair or identify. \
+             You source metal from mines in the hills and sometimes need rare materials. \
+             You could use help acquiring certain ores and alloys.",
+            location
+        ),
+        "herbalist" | "healer" | "alchemist" => format!(
+            "You gather herbs and prepare medicines in {}. \
+             You know the local plants and their properties — healing, poison, and magic. \
+             The forests nearby have good medicinal herbs but also dangerous creatures. \
+             Adventurers often come to you for potions and healing supplies. \
+             You've been worried about a strange blight affecting plants to the east.",
+            location
+        ),
+        "farmer" | "villager" => format!(
+            "You farm the fields near {}. Your life revolves around seasons, crops, and community. \
+             Lately monsters from the hills have been threatening livestock and crops. \
+             You know everyone in the settlement and hear all the local gossip. \
+             You're worried about the coming winter and whether the harvest will be enough.",
+            location
+        ),
+        _ => format!(
+            "You live and work in {}. You know the people, the local troubles, \
+             and the rumors that pass through. Adventurers are not unusual here — \
+             this settlement sees its share of travelers, traders, and fighters. \
+             You have your own daily concerns and opinions about life in this world.",
+            location
+        ),
+    }
 }
 
 fn find_shortest_distance(arr: &[Option<f32>]) -> Option<f32> {

@@ -58,6 +58,7 @@ struct Tracks {
     music: TrackHandle,
     ui: TrackHandle,
     sfx: TrackHandle,
+    voice: TrackHandle,
     ambience: TrackHandle,
 }
 
@@ -172,6 +173,9 @@ struct ListenerInstance {
     ori: Vec3<f32>,
 }
 
+const CONVERSATION_DUCKING_FACTOR: f32 = 0.33;
+const CONVERSATION_DUCKING_FADE_SECS: f32 = 0.18;
+
 struct AudioFrontendInner {
     manager: AudioManager,
     tracks: Tracks,
@@ -241,6 +245,9 @@ impl AudioFrontendInner {
                 .map_err(AudioCreationError::Track)?,
             sfx: manager
                 .add_sub_track(sfx_track_builder)
+                .map_err(AudioCreationError::Track)?,
+            voice: manager
+                .add_sub_track(TrackBuilder::new())
                 .map_err(AudioCreationError::Track)?,
             ambience: manager
                 .add_sub_track(ambience_track_builder)
@@ -319,6 +326,7 @@ pub struct AudioFrontend {
     pub subtitles: VecDeque<Subtitle>,
 
     volumes: Volumes,
+    conversation_ducking_active: bool,
     music_spacing: f32,
     pub combat_music_enabled: bool,
 
@@ -430,6 +438,7 @@ impl AudioFrontend {
             Self {
                 inner: Some(inner),
                 volumes: Volumes::default(),
+                conversation_ducking_active: false,
                 music_spacing: 1.0,
                 mtm: AssetExt::load_expect("voxygen.audio.music_transition_manifest"),
                 subtitles: VecDeque::new(),
@@ -440,6 +449,7 @@ impl AudioFrontend {
             Self {
                 inner: None,
                 volumes: Volumes::default(),
+                conversation_ducking_active: false,
                 music_spacing: 1.0,
                 mtm: AssetExt::load_expect("voxygen.audio.music_transition_manifest"),
                 subtitles: VecDeque::new(),
@@ -457,6 +467,7 @@ impl AudioFrontend {
             inner: None,
             music_spacing: 1.0,
             volumes: Volumes::default(),
+            conversation_ducking_active: false,
             mtm: AssetExt::load_expect("voxygen.audio.music_transition_manifest"),
             subtitles: VecDeque::new(),
             subtitles_enabled: false,
@@ -670,6 +681,73 @@ impl AudioFrontend {
         }
     }
 
+    /// Play a chunk of raw voice PCM audio spatially at the given position.
+    /// Expects 24kHz mono f32 samples.
+    pub fn emit_voice_audio(
+        &mut self,
+        samples: &[f32],
+        emitter_pos: Vec3<f32>,
+    ) -> Option<SfxHandle> {
+        if !self.sfx_enabled() {
+            return None;
+        }
+
+        let inner = self.inner.as_mut()?;
+        let (channel_idx, channel) = inner.channels.get_empty_sfx_channel()?;
+        let listener_id = inner.listener.handle.id();
+
+        // Convert f32 raw samples into Kira Frames
+        let frames: Vec<kira::Frame> = samples.iter().map(|&s| kira::Frame::from_mono(s)).collect();
+        
+        let settings = kira::sound::static_sound::StaticSoundSettings::new();
+        // Default settings are generally fine for our use-case
+        
+        // Build the sound data. 24000 is the sample rate from the TTS engine.
+        let sound = kira::sound::static_sound::StaticSoundData {
+            sample_rate: 24000,
+            frames: frames.into(),
+            settings,
+            slice: None,
+        };
+
+        channel.set_pos(emitter_pos);
+
+        // Initial calculation of player position attenuation to avoid popping
+        let ratio = calculate_player_attenuation(inner.player_pos, emitter_pos);
+
+        // Set volume. Voice is generally a bit louder to be audible over BGM.
+        let volume = to_decibels(1.0 * 5.0 * ratio);
+        let source = sound.volume(volume);
+
+        // Spatial track setup
+        let sfx_track_builder = SpatialTrackBuilder::new()
+            .distances((1.0, SFX_DIST_LIMIT))
+            .attenuation_function(Some(kira::Easing::OutPowf(0.66)));
+
+        if let Ok(track) = inner.tracks.voice.add_spatial_sub_track(
+            listener_id,
+            emitter_pos,
+            sfx_track_builder,
+        ) {
+            Some(SfxHandle {
+                channel_idx,
+                play_id: channel.play(crate::audio::soundcache::AnySoundData::Static(source), 1.0, track),
+            })
+        } else {
+            debug!("Could not add SpatialTrack to play voice audio");
+            None
+        }
+    }
+
+    /// Stops a playing SFX track immediately. Useful for interrupting voice lines.
+    pub fn stop_sfx(&mut self, handle: &SfxHandle) {
+        if let Some(inner) = self.inner.as_mut() {
+            if let Some(channel) = inner.channels.get_sfx_channel(handle) {
+                channel.stop();
+            }
+        }
+    }
+
     /// Plays a sfx non-spatially at the given volume (default 1.0); doesn't
     /// need a position
     pub fn emit_ui_sfx(
@@ -839,6 +917,53 @@ impl AudioFrontend {
     /// Retrieves the current setting for sfx volume
     pub fn get_sfx_volume(&self) -> f32 { self.volumes.sfx }
 
+    fn conversation_ducking_multiplier(&self) -> f32 {
+        if self.conversation_ducking_active {
+            CONVERSATION_DUCKING_FACTOR
+        } else {
+            1.0
+        }
+    }
+
+    fn apply_music_track_volume(&mut self, tween: Tween) {
+        let target_volume = self.volumes.music * self.conversation_ducking_multiplier();
+        if let Some(inner) = self.inner.as_mut() {
+            inner
+                .tracks
+                .music
+                .set_volume(to_decibels(target_volume), tween);
+        }
+    }
+
+    fn apply_ambience_track_volume(&mut self, tween: Tween) {
+        let target_volume = self.volumes.ambience * self.conversation_ducking_multiplier();
+        if let Some(inner) = self.inner.as_mut() {
+            inner
+                .tracks
+                .ambience
+                .set_volume(to_decibels(target_volume), tween);
+        }
+    }
+
+    fn apply_sfx_track_volume(&mut self, tween: Tween) {
+        let target_volume = self.volumes.sfx * self.conversation_ducking_multiplier();
+        if let Some(inner) = self.inner.as_mut() {
+            inner
+                .tracks
+                .sfx
+                .set_volume(to_decibels(target_volume), tween);
+        }
+    }
+
+    fn apply_voice_track_volume(&mut self, tween: Tween) {
+        if let Some(inner) = self.inner.as_mut() {
+            inner
+                .tracks
+                .voice
+                .set_volume(to_decibels(self.volumes.sfx), tween);
+        }
+    }
+
     /// Returns false if volume is 0 or the mute is on
     pub fn music_enabled(&self) -> bool { self.get_music_volume() > 0.0 }
 
@@ -850,42 +975,48 @@ impl AudioFrontend {
 
     pub fn set_music_volume(&mut self, music_volume: f32) {
         self.volumes.music = music_volume;
-
-        if let Some(inner) = self.inner.as_mut() {
-            inner
-                .tracks
-                .music
-                .set_volume(to_decibels(music_volume), Tween::default())
-        }
+        self.apply_music_track_volume(Tween::default());
     }
 
     pub fn set_ambience_volume(&mut self, ambience_volume: f32) {
         self.volumes.ambience = ambience_volume;
-
-        if let Some(inner) = self.inner.as_mut() {
-            inner
-                .tracks
-                .ambience
-                .set_volume(to_decibels(ambience_volume), Tween::default())
-        }
+        self.apply_ambience_track_volume(Tween::default());
     }
 
     /// Sets the volume for both spatial sfx and UI (might separate these
     /// controls later)
     pub fn set_sfx_volume(&mut self, sfx_volume: f32) {
         self.volumes.sfx = sfx_volume;
-
-        if let Some(inner) = self.inner.as_mut() {
-            inner
-                .tracks
-                .sfx
-                .set_volume(to_decibels(sfx_volume), Tween::default())
-        }
+        self.apply_sfx_track_volume(Tween::default());
+        self.apply_voice_track_volume(Tween::default());
     }
 
     pub fn set_music_spacing(&mut self, multiplier: f32) { self.music_spacing = multiplier }
 
     pub fn set_subtitles(&mut self, enabled: bool) { self.subtitles_enabled = enabled }
+
+    pub fn set_conversation_ducking(&mut self, active: bool) {
+        if self.conversation_ducking_active == active {
+            return;
+        }
+
+        self.conversation_ducking_active = active;
+        let tween = Tween {
+            duration: Duration::from_secs_f32(CONVERSATION_DUCKING_FADE_SECS),
+            ..Default::default()
+        };
+        self.apply_music_track_volume(tween);
+        let tween = Tween {
+            duration: Duration::from_secs_f32(CONVERSATION_DUCKING_FADE_SECS),
+            ..Default::default()
+        };
+        self.apply_ambience_track_volume(tween);
+        let tween = Tween {
+            duration: Duration::from_secs_f32(CONVERSATION_DUCKING_FADE_SECS),
+            ..Default::default()
+        };
+        self.apply_sfx_track_volume(tween);
+    }
 
     /// Updates volume of the master track
     pub fn set_master_volume(&mut self, master_volume: f32) {

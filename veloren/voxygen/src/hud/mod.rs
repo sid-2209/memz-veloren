@@ -235,9 +235,33 @@ const NAMETAG_DMG_RANGE: f32 = 120.0;
 const SPEECH_BUBBLE_RANGE: f32 = NAMETAG_RANGE;
 const EXP_FLOATER_LIFETIME: f32 = 2.0;
 const EXP_ACCUMULATION_DURATION: f32 = 0.5;
+const VOICE_SUBTITLE_LIFETIME_SECS: u64 = 8;
 
 // TODO: Don't hard code this
 pub fn default_water_color() -> Rgba<f32> { srgba_to_linear(Rgba::new(0.0, 0.18, 0.37, 1.0)) }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VoiceConversationSpeaker {
+    User,
+    Npc,
+}
+
+impl VoiceConversationSpeaker {
+    fn color(self) -> Color {
+        match self {
+            Self::User => Color::Rgba(0.98, 0.86, 0.48, 1.0),
+            Self::Npc => Color::Rgba(0.77, 0.93, 1.0, 1.0),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct VoiceConversationLine {
+    speaker: VoiceConversationSpeaker,
+    speaker_label: String,
+    text: String,
+    expires_at: Instant,
+}
 
 widget_ids! {
     struct Ids {
@@ -372,6 +396,12 @@ widget_ids! {
         tut_arrow,
         tut_arrow_txt_bg,
         tut_arrow_txt,
+
+        // Voice system indicator
+        voice_indicator_bg,
+        voice_indicator_txt,
+        voice_subtitle_bg,
+        voice_subtitle_texts[],
     }
 }
 
@@ -1322,6 +1352,8 @@ pub struct Hud {
     clear_chat: bool,
     current_dialogue: Option<(EcsEntity, Instant, rtsim::Dialogue<true>)>,
     extra_markers: Vec<map::ExtraMarker>,
+    pub voice_display_text: Option<String>,
+    voice_conversation_lines: VecDeque<VoiceConversationLine>,
 }
 
 impl Hud {
@@ -1464,6 +1496,8 @@ impl Hud {
             clear_chat: false,
             current_dialogue: None,
             extra_markers: Vec::new(),
+            voice_display_text: None,
+            voice_conversation_lines: VecDeque::new(),
         }
     }
 
@@ -3450,6 +3484,57 @@ impl Hud {
             )
             .set(self.ids.subtitles, ui_widgets);
         }
+
+        let now = Instant::now();
+        self.voice_conversation_lines
+            .retain(|line| line.expires_at > now);
+        let visible_voice_count = self.voice_conversation_lines.len().min(2);
+        if visible_voice_count > 0 {
+            if self.ids.voice_subtitle_texts.len() < visible_voice_count {
+                self.ids
+                    .voice_subtitle_texts
+                    .resize(visible_voice_count, &mut ui_widgets.widget_id_generator());
+            }
+
+            let start_idx = self
+                .voice_conversation_lines
+                .len()
+                .saturating_sub(visible_voice_count);
+            let visible_voice_lines: Vec<_> = self
+                .voice_conversation_lines
+                .iter()
+                .skip(start_idx)
+                .collect();
+            let subtitle_box_height = 76.0 + (visible_voice_count.saturating_sub(1) as f64 * 46.0);
+
+            Rectangle::fill_with(
+                [980.0, subtitle_box_height],
+                Color::Rgba(0.02, 0.03, 0.05, 0.78),
+            )
+            .mid_bottom_with_margin_on(ui_widgets.window, 118.0)
+            .set(self.ids.voice_subtitle_bg, ui_widgets);
+
+            for (i, line) in visible_voice_lines.iter().enumerate() {
+                let subtitle_text = format!("{}: {}", line.speaker_label, line.text);
+                let text_widget = Text::new(&subtitle_text)
+                    .w(920.0)
+                    .center_justify()
+                    .font_id(self.fonts.cyri.conrod_id)
+                    .font_size(self.fonts.cyri.scale(26))
+                    .color(line.speaker.color());
+
+                if i == 0 {
+                    text_widget
+                        .mid_top_with_margin_on(self.ids.voice_subtitle_bg, 14.0)
+                        .set(self.ids.voice_subtitle_texts[i], ui_widgets);
+                } else {
+                    text_widget
+                        .down_from(self.ids.voice_subtitle_texts[i - 1], 8.0)
+                        .set(self.ids.voice_subtitle_texts[i], ui_widgets);
+                }
+            }
+        }
+
         let inventory = inventories.get(entity);
         //Loot
         LootScroller::new(
@@ -4088,6 +4173,34 @@ impl Hud {
                 .font_id(self.fonts.cyri.conrod_id)
                 .font_size(self.fonts.cyri.scale(20))
                 .set(self.ids.auto_walk_txt, ui_widgets);
+        }
+
+        // Voice system indicator
+        if let Some(ref voice_text) = self.voice_display_text {
+            let voice_color = if voice_text.starts_with("🎤") {
+                Color::Rgba(0.3, 0.9, 0.5, 1.0) // Green
+            } else if voice_text.starts_with("⏳") {
+                Color::Rgba(0.9, 0.9, 0.2, 1.0) // Yellow
+            } else if voice_text.starts_with("🤔") {
+                Color::Rgba(0.2, 0.5, 0.9, 1.0) // Blue
+            } else if voice_text.starts_with("🗣️") {
+                Color::Rgba(0.7, 0.2, 0.9, 1.0) // Purple
+            } else {
+                Color::Rgba(0.9, 0.2, 0.2, 1.0) // Red (error)
+            };
+            Text::new(voice_text)
+                .color(TEXT_BG)
+                .mid_top_with_margin_on(ui_widgets.window, indicator_offset)
+                .font_id(self.fonts.cyri.conrod_id)
+                .font_size(self.fonts.cyri.scale(20))
+                .set(self.ids.voice_indicator_bg, ui_widgets);
+            indicator_offset += 30.0;
+            Text::new(voice_text)
+                .color(voice_color)
+                .top_left_with_margins_on(self.ids.voice_indicator_bg, -1.0, -1.0)
+                .font_id(self.fonts.cyri.conrod_id)
+                .font_size(self.fonts.cyri.scale(20))
+                .set(self.ids.voice_indicator_txt, ui_widgets);
         }
 
         // Camera zoom lock
@@ -4779,6 +4892,57 @@ impl Hud {
     }
 
     pub fn new_message(&mut self, msg: comp::ChatMsg) { self.new_messages.push_back(msg); }
+
+    pub fn clear_voice_conversation(&mut self) { self.voice_conversation_lines.clear(); }
+
+    pub fn push_user_voice_line(&mut self, text: impl Into<String>) {
+        self.push_voice_conversation_line(
+            VoiceConversationSpeaker::User,
+            "User".to_string(),
+            text.into(),
+        );
+    }
+
+    pub fn push_npc_voice_line(&mut self, npc_name: &str, text: impl Into<String>) {
+        let npc_name = npc_name.trim();
+        let speaker_label = if npc_name.is_empty() {
+            "NPC".to_string()
+        } else {
+            format!("NPC ({npc_name})")
+        };
+
+        self.push_voice_conversation_line(
+            VoiceConversationSpeaker::Npc,
+            speaker_label,
+            text.into(),
+        );
+    }
+
+    fn push_voice_conversation_line(
+        &mut self,
+        speaker: VoiceConversationSpeaker,
+        speaker_label: String,
+        text: String,
+    ) {
+        let text = text.trim().replace('\n', " ");
+        if text.is_empty() {
+            return;
+        }
+
+        let now = Instant::now();
+        self.voice_conversation_lines
+            .retain(|line| line.expires_at > now);
+        self.voice_conversation_lines.push_back(VoiceConversationLine {
+            speaker,
+            speaker_label,
+            text,
+            expires_at: now + Duration::from_secs(VOICE_SUBTITLE_LIFETIME_SECS),
+        });
+
+        while self.voice_conversation_lines.len() > 4 {
+            self.voice_conversation_lines.pop_front();
+        }
+    }
 
     pub fn new_notification(&mut self, msg: UserNotification) {
         self.new_notifications.push_back(msg);
