@@ -11,7 +11,7 @@
 //!   cargo run -p memz-voice --example test_e2e_voice
 
 use memz_voice::llm::{DialogueLlm, LlmConfig, NpcContext};
-use memz_voice::tts::{TextToSpeech, TtsConfig};
+use memz_voice::tts::TextToSpeech;
 use memz_voice::voice_profile::VoiceProfile;
 use memz_voice::conversation::ConversationHistory;
 
@@ -48,6 +48,7 @@ fn main() {
         max_tokens: 60,
         seed: Some(42),
         context_size: 2048,
+        keep_alive: "30m".to_string(),
     };
 
     let mut llm = match DialogueLlm::new(llm_config) {

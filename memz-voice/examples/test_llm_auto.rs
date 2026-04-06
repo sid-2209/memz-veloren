@@ -8,7 +8,6 @@
 //!   cargo run -p memz-voice --example test_llm_auto
 
 use memz_voice::llm::{DialogueLlm, LlmConfig, NpcContext};
-use memz_voice::conversation::ConversationHistory;
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();

@@ -183,6 +183,7 @@ struct OllamaOptions {
 #[derive(Debug, Deserialize)]
 struct OllamaChatResponse {
     message: OllamaMessage,
+    #[allow(dead_code)]
     #[serde(default)]
     done: bool,
 }

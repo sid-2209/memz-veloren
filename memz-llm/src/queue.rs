@@ -313,7 +313,7 @@ mod tests {
         let queue = LlmQueue::new(100);
 
         // Enqueue with 0-duration deadline (instantly expired)
-        queue.enqueue(
+        let _ = queue.enqueue(
             LlmPriority::Critical,
             "system".into(),
             "user".into(),
@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(stats.depth, 2);
         assert_eq!(stats.total_enqueued, 2);
 
-        queue.dequeue();
+        let _ = queue.dequeue();
         let stats = queue.stats();
         assert_eq!(stats.depth, 1);
     }

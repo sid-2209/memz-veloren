@@ -12,7 +12,7 @@
 
 use memz_voice::llm::{DialogueLlm, LlmConfig, NpcContext};
 use memz_voice::stt::{SpeechToText, SttConfig};
-use memz_voice::tts::{TextToSpeech, TtsConfig};
+use memz_voice::tts::TextToSpeech;
 use memz_voice::voice_profile::VoiceProfile;
 use memz_voice::conversation::ConversationHistory;
 use std::io::{self, Write};

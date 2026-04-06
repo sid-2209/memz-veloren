@@ -1,107 +1,107 @@
 # Getting Started with MEMZ
 
+Use this guide for the current repository as it exists today, not the earlier phase-by-phase implementation notes.
+
+## What You Can Run Today
+
+- The core MEMZ workspace: `memz-core`, `memz-llm`, `memz-veloren`, `memz-bench`, and `memz-voice`
+- Standalone voice examples from `memz-voice/examples`
+- A simulated in-game voice loop from `memz-veloren/examples/test_voice_ingame.rs`
+- The vendored Veloren client through `veloren/run_veloren.sh`
+
 ## Prerequisites
 
-- **Rust** 1.80+ (tested with 1.93.0)
-- **SQLite** (bundled via `rusqlite`, no system install needed)
-- **Ollama** (optional, for LLM features) — [ollama.ai](https://ollama.ai)
+- A recent Rust toolchain with edition 2024 support
+- Ollama for the voice dialogue path
+- `models/whisper-tiny.en.bin` for local STT
+- Optional Python 3.10+ with `blitz_tts` and/or `mlx_whisper` if you want the helper servers used by the Veloren launcher
 
-## Quick Start
-
-```bash
-# Clone the repository
-git clone https://github.com/your-org/memz.git
-cd memz
-
-# Build all crates
-cargo build
-
-# Run all tests (52+ tests)
-cargo test
-
-# Run benchmarks
-cargo bench --bench memory_system
-```
-
-## Using memz-core as a Library
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-memz-core = { path = "../memz/memz-core" }
-```
-
-### Basic Usage
-
-```rust
-use memz_core::{MemoryBank, MemoryConfig, EntityId, MemoryId, GameTimestamp};
-use memz_core::memory::episodic::EpisodicMemory;
-use memz_core::types::Location;
-use memz_core::persistence::PersistenceEngine;
-use memz_core::config::PersistenceConfig;
-use chrono::Utc;
-
-// Create a memory bank for an NPC
-let mut bank = MemoryBank::new();
-
-// Add an episodic memory
-bank.episodic.push(EpisodicMemory {
-    id: MemoryId::new(),
-    event: "A traveler bought a fine iron sword".to_string(),
-    participants: vec![EntityId::new()],
-    location: Location { x: 100.0, y: 50.0, z: 0.0 },
-    timestamp: GameTimestamp { tick: 1000, real_time: Utc::now() },
-    emotional_valence: 0.5,
-    importance: 0.6,
-    decay_rate: 0.02,
-    strength: 1.0,
-    access_count: 0,
-    last_accessed: GameTimestamp { tick: 1000, real_time: Utc::now() },
-    is_first_meeting: true,
-    embedding: None,
-});
-
-// Persist to SQLite
-let engine = PersistenceEngine::open("my_game.db", &PersistenceConfig::default())?;
-let entity = EntityId::new();
-engine.save_bank(&entity, &bank)?;
-
-// Load later
-let loaded = engine.load_bank(&entity)?.expect("bank exists");
-assert_eq!(loaded.episodic.len(), 1);
-```
-
-## Configuration
-
-Copy `memz.toml` to your project and customize:
+## Clone and Build
 
 ```bash
-cp memz.toml my_server/config/memz.toml
+git clone https://github.com/sid-2209/memz-veloren.git
+cd memz-veloren
+
+# Build the Rust workspace
+cargo build --workspace
+
+# Run workspace tests
+cargo test --workspace
 ```
 
-See the [example memz.toml](../memz.toml) for all available options.
+The vendored `veloren/` tree is not part of the top-level Cargo workspace. It has its own build flow and helper launcher.
 
-## Running with Veloren
+## Core Memory Workflow
+
+If you are starting from the memory system rather than the voice stack:
 
 ```bash
-# The Veloren repo is cloned at veloren/
-# See docs/veloren-rtsim-hooks.md for integration details
+# Focus on the core crate
+cargo test -p memz-core
+
+# Inspect configuration defaults
+sed -n '1,220p' memz.toml
+```
+
+Then read:
+
+1. [architecture.md](architecture.md)
+2. [veloren-rtsim-hooks.md](veloren-rtsim-hooks.md)
+3. [spec/project-memz.md](spec/project-memz.md)
+
+## Voice Workflow
+
+### 1. Start Ollama
+
+```bash
+ollama serve
+ollama pull llama3.2:1b
+```
+
+### 2. Download the Whisper model
+
+```bash
+bash download_whisper.sh
+```
+
+This places `whisper-tiny.en.bin` under `models/`, which is where the voice examples and `memz-veloren::VoiceSystem` look by default.
+
+### 3. Run the standalone voice loop
+
+```bash
+cargo run -p memz-voice --example test_full --release
+```
+
+Useful focused tests:
+
+```bash
+cargo run -p memz-voice --example list_audio_devices
+cargo run -p memz-voice --example test_microphone --release
+cargo run -p memz-voice --example test_stt --release
+cargo run -p memz-voice --example test_llm --release
+cargo run -p memz-voice --example test_tts --release
+```
+
+### 4. Run the simulated in-game loop
+
+```bash
+cargo run -p memz-veloren --example test_voice_ingame --release
+```
+
+### 5. Run the vendored Veloren client
+
+```bash
 cd veloren
-cargo run --bin veloren-server-cli
+./run_veloren.sh
 ```
 
-## Project Structure
+The launcher auto-configures assets, can auto-build the client, and can start Ollama plus the optional STT/TTS helper servers when your local environment supports them.
 
-| Crate | Purpose |
-|-------|---------|
-| `memz-core` | Game-agnostic memory library (types, storage, retrieval, decay) |
-| `memz-llm` | LLM abstraction (Ollama, OpenAI, prompt templates) |
-| `memz-veloren` | Veloren-specific integration (ECS components, hooks) |
-| `memz-bench` | Criterion benchmarks |
+## Where to Go Next
 
-## Next Steps
-
-1. Read [Architecture](architecture.md) for the full system design
-2. Read [Veloren rtsim Hooks](veloren-rtsim-hooks.md) for game integration points
-3. Read [Project Memz.md](../Project%20Memz.md) for the complete design specification
+- [README.md](../README.md): high-level project overview
+- [README.md](README.md): documentation index
+- [architecture.md](architecture.md): current crate responsibilities and data flow
+- [voice/README.md](voice/README.md): voice system overview
+- [voice/testing.md](voice/testing.md): practical test commands
+- [voice/veloren-integration.md](voice/veloren-integration.md): full client run path

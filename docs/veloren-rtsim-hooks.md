@@ -1,5 +1,7 @@
 # Veloren rtsim Integration — Hook Points for MEMZ
 
+For the current voice launcher and in-tree client workflow, see [voice/veloren-integration.md](voice/veloren-integration.md). This document is the deeper reference for where MEMZ-style memory hooks fit into Veloren's simulation model.
+
 > This document maps the integration points between MEMZ and Veloren's `rtsim`
 > (Real-Time Simulation) system. It was generated from an analysis of the
 > Veloren source code (commit at time of clone, Feb 2026).

@@ -6,7 +6,7 @@
 //!   cargo run -p memz-voice --example test_stt
 
 use memz_voice::stt::{SpeechToText, SttConfig};
-use std::io::{self, Write};
+use std::io;
 use std::thread;
 use std::time::Duration;
 

@@ -5,7 +5,7 @@ Thank you for your interest in contributing to MEMZ! 🧠
 ## Getting Started
 
 1. **Fork** the repository
-2. **Clone** your fork: `git clone https://github.com/your-username/memz.git`
+2. **Clone** your fork: `git clone https://github.com/sid-2209/memz-veloren.git`
 3. **Build**: `cargo build`
 4. **Test**: `cargo test`
 5. **Lint**: `cargo clippy -- -D warnings`
@@ -15,8 +15,8 @@ Thank you for your interest in contributing to MEMZ! 🧠
 ### Prerequisites
 
 - Rust 1.75+ (2024 edition)
-- (Optional) Ollama for LLM integration testing
-- (Optional) Python 3.10+ for evaluation tooling
+- (Optional) Ollama for LLM and voice integration testing
+- (Optional) Python 3.10+ for Blitz TTS / MLX Whisper helper tooling
 
 ### Running Tests
 
@@ -71,7 +71,7 @@ cargo clippy --all-targets -- -D warnings
 
 ## Architecture
 
-See `Project Memz.md` for the complete design specification.
+Start with [docs/architecture.md](docs/architecture.md) for the current code layout and [docs/spec/project-memz.md](docs/spec/project-memz.md) for the long-form design specification.
 
 ### Crate Structure
 

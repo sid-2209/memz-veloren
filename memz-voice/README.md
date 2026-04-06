@@ -1,140 +1,89 @@
 # memz-voice
 
-Voice dialogue system for Veloren NPCs - Phase 1 (Simple voice I/O, no MEMZ integration)
+`memz-voice` is the standalone spoken dialogue pipeline used by the wider MEMZ project.
 
-## Features
+It owns:
 
-- **Speech-to-Text (STT):** Whisper-tiny.en for transcribing player voice
-- **Text-to-Speech (TTS):** macOS system TTS (temporary) or Kokoro TTS
-- **LLM Dialogue:** Llama-3.2-1B for generating NPC responses
-- **Simple Prompts:** Generic NPC personalities (no MEMZ context yet)
+- microphone capture and device selection
+- voice activity detection
+- speech-to-text
+- short-form NPC dialogue generation
+- text-to-speech synthesis
+- per-NPC conversation history and voice profiles
 
-## Prerequisites
+The Veloren-facing adapter lives in `memz-veloren::VoiceSystem`.
 
-### System Requirements
-- macOS (M4 or later recommended)
-- Rust 1.93.0+
-- 8GB RAM minimum
-- Microphone
+## Current Architecture
 
-### Models Required
+```text
+microphone -> STT -> Ollama dialogue -> TTS -> audio buffer
+```
 
-Download these models before running:
+More specifically:
+
+- STT uses local Whisper by default and can optionally prefer an HTTP STT backend
+- dialogue generation uses Ollama over HTTP
+- TTS prefers Blitz TTS, then Kokoro, then an optional macOS fallback if a caller enables it, then a placeholder fallback
+
+## Quick Start
+
+From the repository root:
 
 ```bash
-mkdir -p models
-cd models
+ollama serve
+ollama pull llama3.2:1b
+bash download_whisper.sh
 
-# Whisper-tiny (~50MB)
-curl -L -o whisper-tiny.en.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
-
-# Llama-3.2-1B (~700MB)
-curl -L -o llama-3.2-1b-q4.gguf \
-  https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+cargo run -p memz-voice --example test_full --release
 ```
 
-## Building
+If you want real spoken TTS rather than placeholder audio, run a supported TTS server first:
 
 ```bash
-cd memz-voice
-cargo build --release
+python3 blitz_tts_server.py
 ```
 
-## Testing
+or
 
-### Test 1: Speech-to-Text
 ```bash
-cargo run --example test_stt
-```
-Speak into your microphone for 5 seconds, see transcription.
-
-### Test 2: Text-to-Speech
-```bash
-cargo run --example test_tts
-```
-Type text, hear synthesized voice.
-
-### Test 3: LLM Dialogue
-```bash
-cargo run --example test_llm
-```
-Chat with an NPC via text.
-
-### Test 4: Full Voice Dialogue
-```bash
-cargo run --example test_full
-```
-Complete voice loop: speak → NPC responds with voice.
-
-## Usage
-
-```rust
-use memz_voice::VoiceDialogue;
-
-// Initialize
-let mut dialogue = VoiceDialogue::new(
-    "models/whisper-tiny.en.bin",
-    "models/Kokoro-82M",
-    "models/llama-3.2-1b-q4.gguf",
-)?;
-
-// Start recording
-dialogue.start_recording()?;
-
-// ... player speaks ...
-
-// Stop and get response
-let (npc_text, npc_audio) = dialogue.stop_and_respond(
-    "blacksmith",  // NPC profession
-    "friendly",    // NPC mood
-)?;
-
-// Play audio
-dialogue.play_audio(&npc_audio)?;
+python3 kokoro_server.py
 ```
 
-## Architecture
+## Examples
 
-```
-Player Voice → Whisper STT → Simple Prompt → Llama LLM → TTS → Audio Output
-```
+| Command | Purpose |
+|---|---|
+| `cargo run -p memz-voice --example list_audio_devices` | List available input devices |
+| `cargo run -p memz-voice --example test_microphone --release` | Record and inspect microphone levels |
+| `cargo run -p memz-voice --example test_stt --release` | STT only |
+| `cargo run -p memz-voice --example test_llm --release` | Text-only NPC dialogue |
+| `cargo run -p memz-voice --example test_tts --release` | TTS only |
+| `cargo run -p memz-voice --example test_full --release` | End-to-end interactive loop |
+| `cargo run -p memz-voice --example test_e2e_voice --release` | Extended end-to-end test |
 
-## Phase 1 Limitations
+## Important Environment Variables
 
-- ❌ No MEMZ memory integration
-- ❌ No personality system (OCEAN traits)
-- ❌ No sentiment tracking
-- ❌ No context-aware responses
-- ✅ Basic voice input/output works
-- ✅ Generic NPC responses
-- ✅ Spatial audio ready (for Veloren integration)
+| Variable | Effect |
+|---|---|
+| `MEMZ_VOICE_INPUT_DEVICE` | Force a specific microphone by device name |
+| `MEMZ_MODELS_DIR` | Override where examples look for Whisper models |
+| `MEMZ_STT_URL` | Use an external/local HTTP STT endpoint |
+| `MEMZ_STT_VERIFY_MODEL` | Add a stronger local Whisper verifier model |
+| `MEMZ_OLLAMA_MODEL` | Override the Ollama model used by the Veloren adapter |
 
-## Phase 2 (Future)
+## Notes on Scope
 
-Phase 2 will add MEMZ integration:
-- Episodic/semantic/emotional/social memories
-- Personality-driven responses
-- Sentiment tracking
-- Context-aware greetings
-- Gossip and social dynamics
+This crate already supports:
 
-## Troubleshooting
+- NPC-specific voice profiles
+- conversation history
+- local or HTTP STT selection
+- multiple TTS backends
 
-### "Model not found"
-Download models as shown above.
+It does not yet do full MEMZ memory retrieval on its own. Memory-aware behavior belongs to higher-level integration code in `memz-veloren`.
 
-### "No input device available"
-Check microphone permissions:
-- macOS: System Settings → Privacy & Security → Microphone
+## Related Docs
 
-### "Failed to load Whisper model"
-Ensure you downloaded the correct model file (ggml-tiny.en.bin).
-
-### "LLM inference too slow"
-- Ensure Metal GPU is enabled (should be automatic on M4)
-- Try smaller model or reduce max_tokens
-
-## License
-
-Same as parent MEMZ project.
+- [Voice system overview](../docs/voice/README.md)
+- [Voice testing guide](../docs/voice/testing.md)
+- [Veloren integration guide](../docs/voice/veloren-integration.md)

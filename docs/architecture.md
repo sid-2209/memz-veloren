@@ -1,115 +1,101 @@
 # MEMZ Architecture
 
-> Deep dive into the memory system architecture.
+This repository currently contains two closely related systems:
 
-## Crate Structure
+- The MEMZ memory stack: `memz-core`, `memz-llm`, `memz-veloren`, and `memz-bench`
+- The voice NPC stack: `memz-voice`, `memz-veloren::voice_system`, and the in-tree `veloren/` integration
 
-```
+They live in the same workspace, but they are not at the same maturity level. The memory crates are the long-term product direction. The voice crates are the active integration layer for in-game spoken NPC dialogue.
+
+## Workspace Map
+
+```text
 memz/
-├── memz-core/       # Game-agnostic memory library
-│   ├── config.rs        — Full configuration hierarchy (MemzConfig → 11 sub-configs)
-│   ├── memory/          — 7 memory types + MemoryBank aggregate
-│   │   ├── episodic.rs      — "What happened" (Tulving, 1972)
-│   │   ├── semantic.rs      — "What I know" (Tulving, 1985)
-│   │   ├── emotional.rs     — "How I feel" (PAD model, Russell & Mehrabian, 1977)
-│   │   ├── social.rs        — "What I've heard" (Dunbar, 1996)
-│   │   ├── reflective.rs    — "What I think" (Flavell, 1979)
-│   │   ├── procedural.rs    — "What I know how to do" (Anderson ACT-R, 1993)
-│   │   └── injected.rs      — "My backstory" (player-authored)
-│   ├── retrieval/       — Scoring & ranking engine
-│   ├── embedding.rs     — Vector embedding trait + stubs
-│   ├── decay.rs         — Ebbinghaus forgetting curve
-│   ├── eviction.rs      — Hot/Warm/Cold/Archive ring eviction
-│   ├── consolidation.rs — Episodic→Semantic, Episodic→Procedural transforms
-│   ├── reflection.rs    — Rule-based + LLM reflection triggers
-│   ├── social.rs        — Bayesian gossip propagation
-│   ├── safety.rs        — Content filtering, rate limiting
-│   ├── persistence.rs   — SQLite storage with CRC-32 checksums
-│   ├── error.rs         — Error types
-│   └── types.rs         — Core types (EntityId, MemoryId, Embedding, etc.)
-│
-├── memz-llm/        # LLM abstraction layer
-│   ├── client.rs        — Ollama/OpenAI client
-│   ├── prompt.rs        — Template rendering engine
-│   ├── types.rs         — LLM request/response types
-│   ├── error.rs         — LLM errors
-│   └── prompts/         — Versioned prompt templates + GBNF grammars
-│       ├── v1/              — 7 prompt templates (TOML)
-│       └── grammars/        — 4 GBNF grammars
-│
-├── memz-veloren/    # Veloren game integration
-│   ├── components.rs    — ECS components (MemoryComponent, markers)
-│   ├── events.rs        — GameEvent enum (9 variants)
-│   ├── systems.rs       — observe_event, run_decay, enforce_limits
-│   └── hooks.rs         — on_dialogue, on_combat, on_trade, etc.
-│
-├── memz-bench/      # Criterion benchmarks
-│   └── benches/memory_system.rs
-│
-└── docs/            # Documentation
-    ├── architecture.md        — This file
-    ├── veloren-rtsim-hooks.md — Veloren integration map
-    └── getting-started.md     — Quick start guide
+├── memz-core/      # Memory model, storage, retrieval, decay, safety, replay, reputation
+├── memz-llm/       # Prompting, client abstractions, request queue
+├── memz-veloren/   # Veloren adapter: bridge, memory rule, dialogue, voice system
+├── memz-voice/     # Voice pipeline: STT, LLM dialogue, TTS, VAD, conversation history
+├── memz-bench/     # Criterion benchmarks for performance-sensitive memory paths
+├── veloren/        # Vendored Veloren tree used for live client integration work
+└── docs/           # Curated project documentation
 ```
 
-## Memory Lifecycle
+## Crate Responsibilities
 
+### `memz-core`
+
+Owns the game-agnostic memory model:
+
+- `memory/` defines episodic, semantic, emotional, social, reflective, procedural, and injected memories
+- `observation.rs`, `decay.rs`, `eviction.rs`, `consolidation.rs`, and `reflection.rs` drive memory lifecycle behavior
+- `persistence.rs` handles durable storage
+- `retrieval/` ranks memories for downstream behavior and dialogue
+- `reputation.rs`, `replay.rs`, `conflict.rs`, `bard.rs`, and `first_five.rs` capture higher-level world features built on top of memory data
+
+### `memz-llm`
+
+Provides the shared LLM layer for memory-aware systems:
+
+- `client.rs` wraps provider access
+- `prompt.rs` renders prompts and templates
+- `queue.rs` coordinates asynchronous request flow
+- `types.rs` and `error.rs` define the transport surface
+
+### `memz-veloren`
+
+Bridges MEMZ and Veloren:
+
+- `bridge.rs` maps Veloren concepts into MEMZ types
+- `events.rs`, `hooks.rs`, and `memory_rule.rs` convert game activity into memory updates
+- `dialogue.rs` assembles context for responses
+- `voice_system.rs` adapts the standalone voice pipeline to Veloren's frame/update model
+
+### `memz-voice`
+
+Owns the real-time spoken dialogue pipeline:
+
+- `stt.rs` selects the microphone, captures audio, applies VAD, and transcribes speech with local Whisper or an optional HTTP STT backend
+- `llm.rs` builds NPC prompts and talks to Ollama
+- `tts.rs` synthesizes speech through Blitz TTS, Kokoro, optional macOS fallback, or a placeholder fallback
+- `conversation.rs` keeps short per-NPC dialogue history
+- `voice_profile.rs` maps NPC traits and professions to voice parameters
+- `lib.rs` ties the stages together with a threaded `VoicePipeline`
+
+## Memory Flow
+
+```text
+Veloren event
+  -> memz-veloren::events / hooks / memory_rule
+  -> memz-core::MemoryBank update
+  -> decay / eviction / consolidation / reflection / gossip
+  -> retrieval and dialogue context
+  -> player-facing behavior
 ```
-Game Event (combat, dialogue, trade, death, theft, observation)
-    │
-    ▼
-Event Observation (memz-veloren/events.rs)
-    │
-    ▼
-Memory Encoding (episodic, with emotional valence & importance)
-    │
-    ▼
-Memory Storage (MemoryBank — in-memory Vec per type)
-    │
-    ├─→ Decay (Ebbinghaus curve, every ~60 ticks)
-    ├─→ Eviction (Hot→Warm→Cold→Archive, by age & score)
-    ├─→ Consolidation (Episodic→Semantic, Episodic→Procedural, async)
-    ├─→ Reflection (LLM Tier 2, async, creates ReflectiveMemory)
-    └─→ Gossip (Social propagation, trust-weighted, Bayesian belief update)
-         │
-         ▼
-Retrieval (top-K scoring: recency × relevance × importance × emotion × social)
-    │
-    ▼
-Behavior Output (dialogue generation, price adjustment, relationship change)
+
+The memory system is designed to degrade gracefully when embeddings or LLM features are unavailable.
+
+## Voice Flow
+
+```text
+Push-to-talk input
+  -> memz-veloren::VoiceSystem
+  -> memz-voice::VoicePipeline
+  -> SpeechToText (local Whisper or HTTP STT)
+  -> DialogueLlm (Ollama)
+  -> TextToSpeech (Blitz / Kokoro / fallback)
+  -> VoiceGameEvent stream back to the game
 ```
 
-## Retrieval Algorithm
+This voice stack is currently context-aware through NPC metadata and short conversation history. It is not yet fully memory-aware in the MEMZ sense; that integration is future work.
 
-Score = w₁·Recency + w₂·Relevance + w₃·Importance + w₄·Emotional + w₅·Social
+## Integration Surface in `veloren/`
 
-| Factor | Formula | Default Weight |
-|--------|---------|---------------|
-| Recency | e^(-λ · ΔT) | 0.20 |
-| Relevance | cosine_similarity(query_embed, memory_embed) | 0.30 |
-| Importance | pre-computed 0-1 score | 0.20 |
-| Emotional | |valence| × volatility | 0.20 |
-| Social | trust_in_source × recency_of_transmission | 0.10 |
+The vendored Veloren tree contains the current application-side hooks for voice work, primarily in:
 
-## Performance Budget
+- `veloren/voxygen/src/session/mod.rs`
+- `veloren/voxygen/src/hud/mod.rs`
+- `veloren/voxygen/src/audio/mod.rs`
+- `veloren/voxygen/src/audio/channel.rs`
+- `veloren/run_veloren.sh`
 
-| Operation | Budget | Frequency |
-|-----------|--------|-----------|
-| Event observation + memory creation | < 10 μs | Per event |
-| Memory decay pass (50 NPCs) | < 50 μs | Every 60 frames |
-| Memory retrieval (top-5 from 200) | < 500 μs | On interaction |
-| Serialization (100 memories) | < 2 ms | On save |
-| Full frame budget (20 active NPCs) | < 2 ms | Every frame |
-
-## Graceful Degradation
-
-```
-LLM + Embeddings Available
-    → Full experience: contextual dialogue, reflections, semantic search
-LLM Unavailable
-    → Template-based dialogue referencing stored memories
-Embeddings Unavailable
-    → Keyword-match retrieval + templates
-Everything Offline
-    → Static personality-based responses (game still fully playable)
-```
+For the practical run flow, see [voice/veloren-integration.md](voice/veloren-integration.md).

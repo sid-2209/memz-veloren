@@ -32,20 +32,33 @@ Prefer a direct link? Open [`public/demo/veloren_npc_demo.mp4`](public/demo/velo
 
 ## 🏗️ Architecture
 
-```
+```text
 memz/
 ├── memz-core/          # Game-agnostic memory library (publishable to crates.io)
 ├── memz-llm/           # LLM abstraction layer (Ollama, OpenAI, llama.cpp)
-├── memz-veloren/       # Veloren integration (ECS components, systems, hooks)
-└── memz-bench/         # CI-enforced benchmark suite (criterion)
+├── memz-veloren/       # Veloren integration (memory + voice adapters)
+├── memz-voice/         # Voice pipeline (STT, LLM dialogue, TTS, VAD)
+├── memz-bench/         # CI-enforced benchmark suite (criterion)
+├── veloren/            # Vendored Veloren tree used for in-repo integration work
+└── docs/               # Project, architecture, and voice integration docs
 ```
+
+## 📚 Docs
+
+- [Documentation Index](docs/README.md)
+- [Getting Started](docs/getting-started.md)
+- [Architecture](docs/architecture.md)
+- [Voice NPC Guide](docs/voice/README.md)
+- [Veloren Hook Map](docs/veloren-rtsim-hooks.md)
+- [Design Spec](docs/spec/project-memz.md)
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Rust nightly (edition 2024)
-- (Optional) Ollama for local LLM support
+- Recent Rust toolchain with edition 2024 support
+- (Optional) Ollama for local LLM and voice dialogue support
+- (Optional) Python 3.10+ for the Blitz TTS / MLX Whisper helper servers
 
 ### Build
 
@@ -58,11 +71,13 @@ cd memz-veloren
 cargo build
 
 # Run tests
-cargo test
+cargo test --workspace
 
 # Run benchmarks
 cargo bench --bench memory_system
 ```
+
+For the voice pipeline and in-game integration flow, start with [docs/voice/README.md](docs/voice/README.md).
 
 ### Configuration
 

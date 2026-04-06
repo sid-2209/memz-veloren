@@ -299,7 +299,7 @@ fn bench_disposition_computation(c: &mut Criterion) {
             format!("Entity {player} did thing {i}"),
             vec![player],
             Location::default(),
-            ts(u64::from(i) * 1000),
+            ts((i as u64) * 1000),
             (i as f32 / 100.0 - 0.5) * 2.0,
             0.5,
         ));

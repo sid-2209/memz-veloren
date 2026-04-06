@@ -33,6 +33,7 @@ fn main() -> anyhow::Result<()> {
             extraversion: 0.3,
             neuroticism: 0.2,
             position: [100.0, 200.0, 50.0],
+            knowledge: "Bandits have been sighted near the east road this week.".to_string(),
         },
         VelorenNpcData {
             entity_id: 2,
@@ -46,6 +47,7 @@ fn main() -> anyhow::Result<()> {
             extraversion: 0.8,
             neuroticism: 0.4,
             position: [150.0, 210.0, 50.0],
+            knowledge: "The market is short on cloth, spices, and lamp oil.".to_string(),
         },
         VelorenNpcData {
             entity_id: 3,
@@ -59,6 +61,7 @@ fn main() -> anyhow::Result<()> {
             extraversion: 0.4,
             neuroticism: 0.3,
             position: [120.0, 190.0, 50.0],
+            knowledge: "The forge is busy repairing tools and fitting new blades.".to_string(),
         },
     ];
 
