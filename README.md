@@ -9,6 +9,14 @@
 
 **MEMZ** is an open-source Rust library that adds a **persistent, LLM-powered memory layer** to every character in a game. Currently integrated with [Veloren](https://veloren.net), a multiplayer voxel RPG.
 
+## 🎥 Demo Video
+
+Click the preview below to watch the Veloren NPC demo on GitHub.
+
+[![Watch the Veloren NPC demo](public/demo/veloren_npc_demo_poster.jpg)](public/demo/veloren_npc_demo.mp4)
+
+Prefer a direct link? Open [`public/demo/veloren_npc_demo.mp4`](public/demo/veloren_npc_demo.mp4).
+
 ## ✨ Features
 
 - **7 Memory Types** — Episodic, Semantic, Emotional, Social, Reflective, Procedural, Injected

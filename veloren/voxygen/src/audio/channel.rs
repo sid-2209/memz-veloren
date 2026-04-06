@@ -329,6 +329,9 @@ pub struct SfxChannel {
     track: Option<SpatialTrackHandle>,
     source: Option<AnySoundHandle>,
     source_initial_volume: f32,
+    source_gain_multiplier: f32,
+    distance_attenuation_floor: f32,
+    spatialization_strength: f32,
     pos: Vec3<f32>,
     // Increments every time we play a distinct sound through this channel
     pub play_counter: usize,
@@ -340,6 +343,9 @@ impl SfxChannel {
             track: None,
             source: None,
             source_initial_volume: 0.0,
+            source_gain_multiplier: 5.0,
+            distance_attenuation_floor: 0.0,
+            spatialization_strength: 1.0,
             pos: Vec3::zero(),
             play_counter: 0,
         }
@@ -349,6 +355,23 @@ impl SfxChannel {
 
     pub fn set_source(&mut self, source_handle: Option<AnySoundHandle>) {
         self.source = source_handle;
+    }
+
+    pub fn configure_playback_profile(
+        &mut self,
+        source_gain_multiplier: f32,
+        distance_attenuation_floor: f32,
+        spatialization_strength: f32,
+    ) {
+        self.source_gain_multiplier = source_gain_multiplier.max(0.0);
+        self.distance_attenuation_floor = distance_attenuation_floor.clamp(0.0, 1.0);
+        self.spatialization_strength = spatialization_strength.clamp(0.0, 1.0);
+    }
+
+    pub fn scaled_source_volume(&self, base_volume: f32, distance_ratio: f32) -> f32 {
+        base_volume
+            * self.source_gain_multiplier
+            * distance_ratio.max(self.distance_attenuation_floor)
     }
 
     /// Sets the volume of the source, not the track. This is only used to
@@ -370,6 +393,11 @@ impl SfxChannel {
         volume: f32,
         mut track: SpatialTrackHandle,
     ) -> usize {
+        let tween = Tween {
+            duration: Duration::from_secs_f32(0.0),
+            ..Default::default()
+        };
+        track.set_spatialization_strength(self.spatialization_strength, tween);
         match track.play(source) {
             Ok(handle) => {
                 self.source = Some(handle);
@@ -422,7 +450,7 @@ impl SfxChannel {
         // A multiplier between 0.0 and 1.0, with 0.0 being the furthest away from and
         // 1.0 being closest to the player.
         let ratio = calculate_player_attenuation(player_pos, self.pos);
-        self.set_source_volume(self.source_initial_volume * 5.0 * ratio);
+        self.set_source_volume(self.scaled_source_volume(self.source_initial_volume, ratio));
     }
 }
 

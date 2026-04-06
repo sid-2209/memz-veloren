@@ -24,17 +24,20 @@ pub struct LlmConfig {
     pub seed: Option<u32>,
     /// Context window size for the model.
     pub context_size: u32,
+    /// How long Ollama should keep the model warm between requests.
+    pub keep_alive: String,
 }
 
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             ollama_url: "http://localhost:11434".to_string(),
-            model_name: "llama3.2:3b".to_string(), // 3b gives dramatically better dialogue vs 1b
+            model_name: "llama3.2:1b".to_string(),
             temperature: 0.8,  // Slight creativity for NPC personality variance
             max_tokens: 80,    // Keep responses tight — 1-2 sentences for voice
             seed: None,
             context_size: 2048,
+            keep_alive: "30m".to_string(),
         }
     }
 }
@@ -162,6 +165,8 @@ struct OllamaChatRequest {
     messages: Vec<OllamaMessage>,
     stream: bool,
     options: OllamaOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<String>,
 }
 
 /// Ollama generation options.
@@ -295,6 +300,7 @@ impl DialogueLlm {
                 seed: self.config.seed,
                 num_ctx: self.config.context_size,
             },
+            keep_alive: Some(self.config.keep_alive.clone()),
         };
 
         log::debug!("Sending chat request to {}", url);
@@ -392,6 +398,7 @@ impl DialogueLlm {
                 seed: self.config.seed,
                 num_ctx: self.config.context_size,
             },
+            keep_alive: Some(self.config.keep_alive.clone()),
         };
 
         let resp: reqwest::blocking::Response = self.client

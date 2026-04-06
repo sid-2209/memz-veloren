@@ -16,6 +16,9 @@ __pycache__/
 *.pyc
 .venv/
 
+# Local model downloads
+/models/
+
 # Environment
 .env
 .env.local

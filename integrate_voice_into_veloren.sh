@@ -1,0 +1,53 @@
+#!/bin/bash
+
+echo "╔════════════════════════════════════════════════════════════╗"
+echo "║     Integrating Voice System into Veloren                 ║"
+echo "╚════════════════════════════════════════════════════════════╝"
+echo ""
+
+# Check if we're in the right directory
+if [ ! -d "veloren" ]; then
+    echo "❌ Error: veloren directory not found"
+    echo "   Run this script from the memz directory"
+    exit 1
+fi
+
+echo "✅ Changes already made:"
+echo "   1. Added VoiceTalk to GameInput enum"
+echo "   2. Added memz-veloren dependency to Cargo.toml"
+echo ""
+
+echo "📝 Manual steps required:"
+echo ""
+echo "You need to manually edit: veloren/voxygen/src/session/mod.rs"
+echo ""
+echo "See VELOREN_INTEGRATION_COMPLETE.md for detailed instructions"
+echo ""
+echo "Or use the minimal integration approach:"
+echo ""
+echo "1. Add at the top of session/mod.rs:"
+echo "   use memz_veloren::VoiceSystem;"
+echo ""
+echo "2. Add to SessionState struct:"
+echo "   voice_system: Option<VoiceSystem>,"
+echo ""
+echo "3. Initialize in new():"
+echo "   voice_system: VoiceSystem::new().ok(),"
+echo ""
+echo "4. Add input handling in the Event::InputUpdate match:"
+echo "   See veloren_voice_integration.patch for full code"
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo ""
+echo "After making changes, build with:"
+echo "   cd veloren"
+echo "   cargo build --release"
+echo ""
+echo "This will take 10-30 minutes."
+echo ""
+echo "Then test in-game:"
+echo "   1. Start Ollama: ollama serve"
+echo "   2. Run Veloren: ./target/release/veloren-voxygen"
+echo "   3. Find an NPC"
+echo "   4. Press V and speak!"
+echo ""

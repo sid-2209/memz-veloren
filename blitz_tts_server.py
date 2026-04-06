@@ -40,6 +40,7 @@ DEFAULT_LANG = os.environ.get("BLITZ_TTS_LANG", "en")
 DEFAULT_VOICE = os.environ.get("BLITZ_TTS_DEFAULT_VOICE", "M4")
 DEFAULT_STEPS = int(os.environ.get("BLITZ_TTS_STEPS", "7"))
 DEFAULT_SPEED = float(os.environ.get("BLITZ_TTS_SPEED", "1.0"))
+DEFAULT_SILENCE_DURATION = float(os.environ.get("BLITZ_TTS_SILENCE_DURATION", "0.02"))
 
 
 def _repo_root() -> Path:
@@ -153,6 +154,7 @@ class TtsHandler(BaseHTTPRequestHandler):
         lang = str(payload.get("lang", DEFAULT_LANG)).strip() or DEFAULT_LANG
         speed = float(payload.get("speed", DEFAULT_SPEED))
         steps = int(payload.get("steps", DEFAULT_STEPS))
+        silence_duration = float(payload.get("silence_duration", DEFAULT_SILENCE_DURATION))
 
         if not text:
             self._respond(400, b"Empty text", "text/plain")
@@ -163,10 +165,11 @@ class TtsHandler(BaseHTTPRequestHandler):
 
         speed = max(0.8, min(1.2, speed))
         steps = max(4, min(12, steps))
+        silence_duration = max(0.0, min(0.2, silence_duration))
 
         print(
             f'Synthesizing voice={voice} lang={lang} speed={speed:.2f} '
-            f'steps={steps} text="{text[:72]}"'
+            f'steps={steps} silence={silence_duration:.2f} text="{text[:72]}"'
         )
 
         try:
@@ -177,6 +180,7 @@ class TtsHandler(BaseHTTPRequestHandler):
                     lang=lang,
                     steps=steps,
                     speed=speed,
+                    silence_duration=silence_duration,
                 )
             audio = _resample(np.asarray(result.audio, dtype=np.float32), result.sample_rate, TARGET_SAMPLE_RATE)
             buffer = io.BytesIO()

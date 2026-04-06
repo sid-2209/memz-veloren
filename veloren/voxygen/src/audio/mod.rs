@@ -175,6 +175,11 @@ struct ListenerInstance {
 
 const CONVERSATION_DUCKING_FACTOR: f32 = 0.33;
 const CONVERSATION_DUCKING_FADE_SECS: f32 = 0.18;
+const VOICE_TRACK_FLOOR_VOLUME: f32 = 0.85;
+const VOICE_TRACK_GAIN: f32 = 1.45;
+const VOICE_SOURCE_GAIN: f32 = 6.5;
+const VOICE_MIN_PLAYER_ATTENUATION: f32 = 0.94;
+const VOICE_SPATIALIZATION_STRENGTH: f32 = 0.28;
 
 struct AudioFrontendInner {
     manager: AudioManager,
@@ -642,13 +647,14 @@ impl AudioFrontend {
             {
                 let listener_id = inner.listener.handle.id();
                 let sound = load_ogg(sfx_file, false);
+                channel.configure_playback_profile(5.0, 0.0, 1.0);
                 channel.set_pos(emitter_pos);
 
                 // Initial calculation of player position attenuation to avoid popping
                 let ratio = calculate_player_attenuation(inner.player_pos, emitter_pos);
 
                 let source_volume = volume.unwrap_or(1.0);
-                let source = sound.volume(to_decibels(source_volume * 5.0 * ratio));
+                let source = sound.volume(to_decibels(channel.scaled_source_volume(source_volume, ratio)));
 
                 // We build new tracks here because we have to set the emitter position
                 // initially, which isn't possible to synchronize with the start of a new sound.
@@ -688,6 +694,17 @@ impl AudioFrontend {
         samples: &[f32],
         emitter_pos: Vec3<f32>,
     ) -> Option<SfxHandle> {
+        self.emit_voice_audio_at(samples, emitter_pos, None)
+    }
+
+    /// Play a chunk of raw voice PCM audio spatially at the given position and optional clock time.
+    /// Expects 24kHz mono f32 samples.
+    pub fn emit_voice_audio_at(
+        &mut self,
+        samples: &[f32],
+        emitter_pos: Vec3<f32>,
+        start_time: Option<ClockTime>,
+    ) -> Option<SfxHandle> {
         if !self.sfx_enabled() {
             return None;
         }
@@ -695,6 +712,11 @@ impl AudioFrontend {
         let inner = self.inner.as_mut()?;
         let (channel_idx, channel) = inner.channels.get_empty_sfx_channel()?;
         let listener_id = inner.listener.handle.id();
+        channel.configure_playback_profile(
+            VOICE_SOURCE_GAIN,
+            VOICE_MIN_PLAYER_ATTENUATION,
+            VOICE_SPATIALIZATION_STRENGTH,
+        );
 
         // Convert f32 raw samples into Kira Frames
         let frames: Vec<kira::Frame> = samples.iter().map(|&s| kira::Frame::from_mono(s)).collect();
@@ -712,12 +734,13 @@ impl AudioFrontend {
 
         channel.set_pos(emitter_pos);
 
-        // Initial calculation of player position attenuation to avoid popping
+        // Keep nearby NPC dialogue loud and readable during conversations.
         let ratio = calculate_player_attenuation(inner.player_pos, emitter_pos);
-
-        // Set volume. Voice is generally a bit louder to be audible over BGM.
-        let volume = to_decibels(1.0 * 5.0 * ratio);
-        let source = sound.volume(volume);
+        let volume = to_decibels(channel.scaled_source_volume(1.0, ratio));
+        let mut source = crate::audio::soundcache::AnySoundData::Static(sound).volume(volume);
+        if let Some(start_time) = start_time {
+            source = source.start_time(start_time);
+        }
 
         // Spatial track setup
         let sfx_track_builder = SpatialTrackBuilder::new()
@@ -731,7 +754,7 @@ impl AudioFrontend {
         ) {
             Some(SfxHandle {
                 channel_idx,
-                play_id: channel.play(crate::audio::soundcache::AnySoundData::Static(source), 1.0, track),
+                play_id: channel.play(source, 1.0, track),
             })
         } else {
             debug!("Could not add SpatialTrack to play voice audio");
@@ -745,6 +768,21 @@ impl AudioFrontend {
             if let Some(channel) = inner.channels.get_sfx_channel(handle) {
                 channel.stop();
             }
+        }
+    }
+
+    pub fn is_sfx_done(&mut self, handle: &SfxHandle) -> bool {
+        self.inner
+            .as_mut()
+            .and_then(|inner| inner.channels.get_sfx_channel(handle).map(|channel| channel.is_done()))
+            .unwrap_or(true)
+    }
+
+    pub fn set_sfx_position(&mut self, handle: &SfxHandle, pos: Vec3<f32>) {
+        if let Some(inner) = self.inner.as_mut()
+            && let Some(channel) = inner.channels.get_sfx_channel(handle)
+        {
+            channel.set_pos(pos);
         }
     }
 
@@ -957,10 +995,11 @@ impl AudioFrontend {
 
     fn apply_voice_track_volume(&mut self, tween: Tween) {
         if let Some(inner) = self.inner.as_mut() {
+            let target_volume = self.volumes.sfx.max(VOICE_TRACK_FLOOR_VOLUME) * VOICE_TRACK_GAIN;
             inner
                 .tracks
                 .voice
-                .set_volume(to_decibels(self.volumes.sfx), tween);
+                .set_volume(to_decibels(target_volume), tween);
         }
     }
 

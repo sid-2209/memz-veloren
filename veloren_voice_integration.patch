@@ -1,0 +1,184 @@
+diff --git a/veloren/voxygen/src/session/mod.rs b/veloren/voxygen/src/session/mod.rs
+index 1234567..abcdefg 100644
+--- a/veloren/voxygen/src/session/mod.rs
++++ b/veloren/voxygen/src/session/mod.rs
+@@ -1,6 +1,7 @@
+ // ... existing imports ...
+ use common::comp;
+ use specs::WorldExt;
++use memz_veloren::VoiceSystem;
+ 
+ // ... existing code ...
+ 
+@@ -125,6 +126,8 @@ pub struct SessionState {
+     hitboxes: HashMap<specs::Entity, DebugShapeId>,
+     lines: PlayerDebugLines,
+     tracks: HashMap<Vec2<i32>, Vec<DebugShapeId>>,
+     gizmos: Vec<(DebugShapeId, common::resources::Time, bool)>,
++    // Voice system for NPC dialogue
++    voice_system: Option<VoiceSystem>,
+ }
+ 
+ /// Represents an active game session (i.e., the one being played).
+@@ -180,6 +183,13 @@ impl SessionState {
+         let walk_forward_dir = scene.camera().forward_xy();
+         let walk_right_dir = scene.camera().right_xy();
+ 
++        // Initialize voice system
++        let voice_system = VoiceSystem::new().ok();
++        if voice_system.is_some() {
++            tracing::info!("Voice system initialized successfully");
++        } else {
++            tracing::warn!("Voice system failed to initialize - voice features disabled");
++        }
++
+         Self {
+             scene,
+             client,
+@@ -202,6 +212,7 @@ impl SessionState {
+             hitboxes: HashMap::new(),
+             metadata,
+             tracks: HashMap::new(),
+             lines: PlayerDebugLines::default(),
+             gizmos: Vec::new(),
++            voice_system,
+         }
+     }
+ 
+@@ -800,6 +811,48 @@ impl SessionState {
+                     Event::InputUpdate(input, state)
+                         if state != self.inputs_state.contains(&input) =>
+                     {
++                        // Handle voice talk input
++                        if input == GameInput::VoiceTalk {
++                            if state {
++                                // Key pressed - start recording
++                                if let Some(voice_system) = &mut self.voice_system {
++                                    if let Some(npc_entity) = self.find_nearest_interactable_npc() {
++                                        if let Ok(()) = voice_system.start_recording(npc_entity.id()) {
++                                            tracing::info!("Started voice recording for NPC");
++                                        }
++                                    } else {
++                                        tracing::warn!("No NPC nearby to talk to (within 10m)");
++                                    }
++                                }
++                            } else {
++                                // Key released - stop recording and process
++                                if let Some(voice_system) = &mut self.voice_system {
++                                    if voice_system.is_recording() {
++                                        let npc_data = self.get_active_npc_data();
++                                        
++                                        match voice_system.stop_and_respond(&npc_data, None) {
++                                            Ok((text, audio)) => {
++                                                tracing::info!("NPC response: {}", text);
++                                                
++                                                // Show in chat
++                                                self.hud.new_message(comp::ChatType::Meta(
++                                                    format!("{}: {}", npc_data.name, text)
++                                                ));
++                                                
++                                                // Play audio
++                                                if let Err(e) = voice_system.play_audio(&audio) {
++                                                    tracing::error!("Failed to play NPC voice: {}", e);
++                                                }
++                                            }
++                                            Err(e) => {
++                                                tracing::error!("Voice processing error: {}", e);
++                                                self.hud.new_message(comp::ChatType::Meta(
++                                                    format!("Voice error: {}", e)
++                                                ));
++                                            }
++                                        }
++                                    }
++                                }
++                            }
++                        }
++
+                         if !self.inputs_state.insert(input) {
+                             self.inputs_state.remove(&input);
+                         }
+@@ -2000,6 +2053,70 @@ impl SessionState {
+         // ... existing code ...
+     }
+ 
++    /// Find the nearest interactable NPC within range
++    fn find_nearest_interactable_npc(&self) -> Option<specs::Entity> {
++        let client = self.client.borrow();
++        let player_entity = client.entity();
++        let positions = client.state().ecs().read_storage::<comp::Pos>();
++        let agents = client.state().ecs().read_storage::<comp::Agent>();
++        let stats = client.state().ecs().read_storage::<comp::Stats>();
++        
++        let player_pos = positions.get(player_entity)?.0;
++        let max_distance = 10.0; // 10 meters
++        
++        let mut nearest: Option<(specs::Entity, f32)> = None;
++        
++        for (entity, pos, _agent, _stats) in (
++            &client.state().ecs().entities(),
++            &positions,
++            &agents,
++            &stats,
++        ).join() {
++            if entity == player_entity {
++                continue;
++            }
++            
++            let distance = player_pos.distance(pos.0);
++            if distance < max_distance {
++                if let Some((_, nearest_dist)) = nearest {
++                    if distance < nearest_dist {
++                        nearest = Some((entity, distance));
++                    }
++                } else {
++                    nearest = Some((entity, distance));
++                }
++            }
++        }
++        
++        nearest.map(|(entity, _)| entity)
++    }
++
++    /// Get NPC data for voice dialogue
++    fn get_active_npc_data(&self) -> memz_veloren::NpcData {
++        let client = self.client.borrow();
++        
++        if let Some(npc_entity) = self.find_nearest_interactable_npc() {
++            let ecs = client.state().ecs();
++            let stats = ecs.read_storage::<comp::Stats>();
++            let bodies = ecs.read_storage::<comp::Body>();
++            
++            let name = stats
++                .get(npc_entity)
++                .map(|s| s.name.clone())
++                .unwrap_or_else(|| "Unknown".to_string());
++            
++            let profession = if let Some(body) = bodies.get(npc_entity) {
++                match body {
++                    comp::Body::Humanoid(_) => "villager",
++                    _ => "creature",
++                }
++            } else {
++                "unknown"
++            };
++            
++            memz_veloren::NpcData {
++                name,
++                profession: profession.to_string(),
++                location: "nearby".to_string(),
++                mood: "neutral".to_string(),
++                personality: memz_veloren::NpcPersonality::default(),
++            }
++        } else {
++            memz_veloren::NpcData {
++                name: "Unknown".to_string(),
++                profession: "villager".to_string(),
++                location: "nearby".to_string(),
++                mood: "neutral".to_string(),
++                personality: memz_veloren::NpcPersonality::default(),
++            }
++        }
++    }
++
+     // ... rest of existing methods ...
+ }

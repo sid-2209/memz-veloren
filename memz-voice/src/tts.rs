@@ -12,6 +12,13 @@ use crate::error::{Result, VoiceError};
 use crate::voice_profile::VoiceProfile;
 use std::time::Duration;
 
+const VOICE_AUDIO_TARGET_PEAK: f32 = 0.92;
+const VOICE_AUDIO_TARGET_RMS: f32 = 0.16;
+const VOICE_AUDIO_MAX_GAIN: f32 = 3.0;
+const VOICE_AUDIO_TRIM_FLOOR: f32 = 0.0015;
+const VOICE_AUDIO_TRIM_PEAK_RATIO: f32 = 0.01;
+const VOICE_AUDIO_EDGE_FADE_SECS: f32 = 0.02;
+
 /// Which TTS backend is active.
 #[derive(Debug, Clone, PartialEq)]
 enum TtsBackend {
@@ -34,6 +41,11 @@ pub struct TtsConfig {
     pub sample_rate: u32,
     /// Default voice profile if none specified per NPC.
     pub default_voice: VoiceProfile,
+    /// Silence Blitz should append after synthesis.
+    ///
+    /// For gameplay streaming this should stay very small so sentence chunks can
+    /// join smoothly without sounding like separate unrelated clips.
+    pub blitz_silence_duration: f32,
     /// Whether macOS `say` can be used as a final fallback.
     pub allow_macos_say_fallback: bool,
 }
@@ -46,6 +58,7 @@ impl Default for TtsConfig {
             kokoro_server_url: "http://localhost:8880".to_string(),
             sample_rate: 24000,
             default_voice: VoiceProfile::default(),
+            blitz_silence_duration: 0.02,
             allow_macos_say_fallback: false,
         }
     }
@@ -332,6 +345,7 @@ impl TextToSpeech {
             "lang": "en",
             "speed": profile.speed.clamp(0.8, 1.2),
             "steps": 7,
+            "silence_duration": self.config.blitz_silence_duration.clamp(0.0, 0.2),
         });
 
         log::debug!("Blitz request: voice={} speed={:.2}", blitz_voice, profile.speed);
@@ -647,7 +661,7 @@ fn parse_wav_to_f32(wav_bytes: &[u8]) -> Result<Vec<f32>> {
     }
 
     // If stereo, convert to mono by averaging channels
-    let audio = if spec.channels == 2 {
+    let mut audio = if spec.channels == 2 {
         samples
             .chunks(2)
             .map(|frame| (frame[0] + frame.get(1).copied().unwrap_or(0.0)) * 0.5)
@@ -656,7 +670,83 @@ fn parse_wav_to_f32(wav_bytes: &[u8]) -> Result<Vec<f32>> {
         samples
     };
 
+    condition_voice_audio(&mut audio, spec.sample_rate);
+
     Ok(audio)
+}
+
+fn condition_voice_audio(audio: &mut Vec<f32>, sample_rate: u32) {
+    if audio.is_empty() {
+        return;
+    }
+
+    trim_voice_silence(audio, sample_rate);
+    apply_voice_edge_fade(audio, sample_rate);
+
+    let (rms, peak) = voice_audio_stats(audio);
+    if peak <= 0.0 || rms <= 0.0 {
+        return;
+    }
+
+    let gain = (VOICE_AUDIO_TARGET_PEAK / peak)
+        .min(VOICE_AUDIO_TARGET_RMS / rms)
+        .clamp(1.0, VOICE_AUDIO_MAX_GAIN);
+
+    if gain > 1.01 {
+        for sample in audio.iter_mut() {
+            *sample = (*sample * gain).clamp(-1.0, 1.0);
+        }
+    }
+}
+
+fn trim_voice_silence(audio: &mut Vec<f32>, sample_rate: u32) {
+    if audio.is_empty() {
+        return;
+    }
+
+    let (_, peak) = voice_audio_stats(audio);
+    let threshold = (peak * VOICE_AUDIO_TRIM_PEAK_RATIO).max(VOICE_AUDIO_TRIM_FLOOR);
+    let padding = ((sample_rate as f32) * 0.03) as usize;
+
+    let Some(start) = audio.iter().position(|sample| sample.abs() >= threshold) else {
+        return;
+    };
+    let Some(end) = audio.iter().rposition(|sample| sample.abs() >= threshold) else {
+        return;
+    };
+
+    let start = start.saturating_sub(padding);
+    let end = (end + padding + 1).min(audio.len());
+    *audio = audio[start..end].to_vec();
+}
+
+fn apply_voice_edge_fade(audio: &mut [f32], sample_rate: u32) {
+    if audio.is_empty() {
+        return;
+    }
+
+    let fade_len = ((sample_rate as f32) * VOICE_AUDIO_EDGE_FADE_SECS) as usize;
+    let fade_len = fade_len.min(audio.len() / 2);
+    if fade_len == 0 {
+        return;
+    }
+
+    for i in 0..fade_len {
+        let gain = i as f32 / fade_len as f32;
+        audio[i] *= gain;
+        let end_idx = audio.len() - 1 - i;
+        audio[end_idx] *= gain;
+    }
+}
+
+fn voice_audio_stats(audio: &[f32]) -> (f32, f32) {
+    if audio.is_empty() {
+        return (0.0, 0.0);
+    }
+
+    let rms = (audio.iter().map(|sample| sample * sample).sum::<f32>() / audio.len() as f32).sqrt();
+    let peak = audio.iter().fold(0.0f32, |acc, &sample| acc.max(sample.abs()));
+    (rms, peak)
 }
 
 // ═══════════════════════════════════════════════════════════════════════

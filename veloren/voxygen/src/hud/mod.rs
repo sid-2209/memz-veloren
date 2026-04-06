@@ -236,6 +236,9 @@ const SPEECH_BUBBLE_RANGE: f32 = NAMETAG_RANGE;
 const EXP_FLOATER_LIFETIME: f32 = 2.0;
 const EXP_ACCUMULATION_DURATION: f32 = 0.5;
 const VOICE_SUBTITLE_LIFETIME_SECS: u64 = 8;
+const VOICE_SUBTITLE_MIN_SPOKEN_SECS: f32 = 2.0;
+const VOICE_SUBTITLE_POST_ROLL_SECS: f32 = 0.55;
+const VOICE_SUBTITLE_PREVIEW_SECS: f32 = 2.25;
 
 // TODO: Don't hard code this
 pub fn default_water_color() -> Rgba<f32> { srgba_to_linear(Rgba::new(0.0, 0.18, 0.37, 1.0)) }
@@ -244,6 +247,7 @@ pub fn default_water_color() -> Rgba<f32> { srgba_to_linear(Rgba::new(0.0, 0.18,
 enum VoiceConversationSpeaker {
     User,
     Npc,
+    System,
 }
 
 impl VoiceConversationSpeaker {
@@ -251,6 +255,7 @@ impl VoiceConversationSpeaker {
         match self {
             Self::User => Color::Rgba(0.98, 0.86, 0.48, 1.0),
             Self::Npc => Color::Rgba(0.77, 0.93, 1.0, 1.0),
+            Self::System => Color::Rgba(0.78, 0.97, 0.84, 1.0),
         }
     }
 }
@@ -260,7 +265,9 @@ struct VoiceConversationLine {
     speaker: VoiceConversationSpeaker,
     speaker_label: String,
     text: String,
+    visible_from: Instant,
     expires_at: Instant,
+    preview: bool,
 }
 
 widget_ids! {
@@ -1354,6 +1361,7 @@ pub struct Hud {
     extra_markers: Vec<map::ExtraMarker>,
     pub voice_display_text: Option<String>,
     voice_conversation_lines: VecDeque<VoiceConversationLine>,
+    voice_conversation_mode: bool,
 }
 
 impl Hud {
@@ -1498,6 +1506,7 @@ impl Hud {
             extra_markers: Vec::new(),
             voice_display_text: None,
             voice_conversation_lines: VecDeque::new(),
+            voice_conversation_mode: false,
         }
     }
 
@@ -1631,6 +1640,12 @@ impl Hud {
 
             //self.input = client.read_storage::<comp::ControllerInputs>();
             if let Some(health) = healths.get(me) {
+                let has_talkable_npc = entity_interactables.values().any(|interactions| {
+                    interactions
+                        .iter()
+                        .any(|interaction| matches!(interaction, EntityInteraction::Talk))
+                });
+
                 // Hurt Frame
                 let hp_percentage = health.current() / health.maximum() * 100.0;
                 self.hp_pulse += dt.as_secs_f32() * 10.0 / hp_percentage.clamp(3.0, 7.0);
@@ -1662,7 +1677,18 @@ impl Hud {
                         .set(self.ids.death_bg, ui_widgets);
                 }
                 // Crosshair
-                let show_crosshair = (info.is_aiming || info.is_first_person) && !health.is_dead;
+                let show_crosshair = (info.is_aiming
+                    || info.is_first_person
+                    || has_talkable_npc
+                    || self.voice_conversation_mode)
+                    && !health.is_dead;
+                let crosshair_scale = if has_talkable_npc { 2.3 } else { 1.6 };
+                let crosshair_inner_scale = if has_talkable_npc { 2.9 } else { 2.1 };
+                let (crosshair_r, crosshair_g, crosshair_b) = if has_talkable_npc {
+                    (1.0, 0.88, 0.28)
+                } else {
+                    (1.0, 1.0, 1.0)
+                };
                 self.crosshair_opacity = Lerp::lerp(
                     self.crosshair_opacity,
                     if show_crosshair { 1.0 } else { 0.0 },
@@ -1677,19 +1703,24 @@ impl Hud {
                         CrosshairType::Edges => self.imgs.crosshair_outer_edges,
                     },
                 )
-                .w_h(21.0 * 1.5, 21.0 * 1.5)
+                .w_h(21.0 * crosshair_scale, 21.0 * crosshair_scale)
                 .middle_of(ui_widgets.window)
                 .color(Some(Color::Rgba(
-                    1.0,
-                    1.0,
-                    1.0,
+                    crosshair_r,
+                    crosshair_g,
+                    crosshair_b,
                     self.crosshair_opacity * global_state.settings.interface.crosshair_opacity,
                 )))
                 .set(self.ids.crosshair_outer, ui_widgets);
                 Image::new(self.imgs.crosshair_inner)
-                    .w_h(21.0 * 2.0, 21.0 * 2.0)
+                    .w_h(21.0 * crosshair_inner_scale, 21.0 * crosshair_inner_scale)
                     .middle_of(self.ids.crosshair_outer)
-                    .color(Some(Color::Rgba(1.0, 1.0, 1.0, 0.6)))
+                    .color(Some(Color::Rgba(
+                        crosshair_r,
+                        crosshair_g,
+                        crosshair_b,
+                        if has_talkable_npc { 0.88 } else { 0.65 },
+                    )))
                     .set(self.ids.crosshair_inner, ui_widgets);
 
                 if let Some(charge) = char_states.get(me).and_then(|cs| cs.charge_frac()) {
@@ -1704,12 +1735,12 @@ impl Hud {
                         _ if charge > 0.125 => self.imgs.crosshair_charge_1,
                         _ => self.imgs.crosshair_charge_0,
                     })
-                    .w_h(21.0 * 1.5, 21.0 * 1.5)
+                    .w_h(21.0 * crosshair_scale, 21.0 * crosshair_scale)
                     .middle_of(ui_widgets.window)
                     .color(Some(Color::Rgba(
-                        1.0,
-                        1.0,
-                        1.0,
+                        crosshair_r,
+                        crosshair_g,
+                        crosshair_b,
                         self.crosshair_opacity * global_state.settings.interface.crosshair_opacity,
                     )))
                     .set(self.ids.crosshair_charge, ui_widgets);
@@ -3488,7 +3519,12 @@ impl Hud {
         let now = Instant::now();
         self.voice_conversation_lines
             .retain(|line| line.expires_at > now);
-        let visible_voice_count = self.voice_conversation_lines.len().min(2);
+        let visible_voice_lines: Vec<_> = self
+            .voice_conversation_lines
+            .iter()
+            .filter(|line| line.visible_from <= now)
+            .collect();
+        let visible_voice_count = visible_voice_lines.len().min(2);
         if visible_voice_count > 0 {
             if self.ids.voice_subtitle_texts.len() < visible_voice_count {
                 self.ids
@@ -3496,15 +3532,8 @@ impl Hud {
                     .resize(visible_voice_count, &mut ui_widgets.widget_id_generator());
             }
 
-            let start_idx = self
-                .voice_conversation_lines
-                .len()
-                .saturating_sub(visible_voice_count);
-            let visible_voice_lines: Vec<_> = self
-                .voice_conversation_lines
-                .iter()
-                .skip(start_idx)
-                .collect();
+            let start_idx = visible_voice_lines.len().saturating_sub(visible_voice_count);
+            let visible_voice_lines = &visible_voice_lines[start_idx..];
             let subtitle_box_height = 76.0 + (visible_voice_count.saturating_sub(1) as f64 * 46.0);
 
             Rectangle::fill_with(
@@ -3516,12 +3545,17 @@ impl Hud {
 
             for (i, line) in visible_voice_lines.iter().enumerate() {
                 let subtitle_text = format!("{}: {}", line.speaker_label, line.text);
+                let color = if line.preview {
+                    line.speaker.color().alpha(0.72)
+                } else {
+                    line.speaker.color()
+                };
                 let text_widget = Text::new(&subtitle_text)
                     .w(920.0)
                     .center_justify()
                     .font_id(self.fonts.cyri.conrod_id)
                     .font_size(self.fonts.cyri.scale(26))
-                    .color(line.speaker.color());
+                    .color(color);
 
                 if i == 0 {
                     text_widget
@@ -3865,7 +3899,13 @@ impl Hud {
             }));
         }
 
-        let dialogue_open = if self.show.quest
+        if self.voice_conversation_mode {
+            self.show.quest(false);
+            self.current_dialogue = None;
+        }
+
+        let dialogue_open = if !self.voice_conversation_mode
+            && self.show.quest
             && let Some((sender, time, dialogue)) = &self.current_dialogue
         {
             match Quest::new(
@@ -4173,34 +4213,6 @@ impl Hud {
                 .font_id(self.fonts.cyri.conrod_id)
                 .font_size(self.fonts.cyri.scale(20))
                 .set(self.ids.auto_walk_txt, ui_widgets);
-        }
-
-        // Voice system indicator
-        if let Some(ref voice_text) = self.voice_display_text {
-            let voice_color = if voice_text.starts_with("🎤") {
-                Color::Rgba(0.3, 0.9, 0.5, 1.0) // Green
-            } else if voice_text.starts_with("⏳") {
-                Color::Rgba(0.9, 0.9, 0.2, 1.0) // Yellow
-            } else if voice_text.starts_with("🤔") {
-                Color::Rgba(0.2, 0.5, 0.9, 1.0) // Blue
-            } else if voice_text.starts_with("🗣️") {
-                Color::Rgba(0.7, 0.2, 0.9, 1.0) // Purple
-            } else {
-                Color::Rgba(0.9, 0.2, 0.2, 1.0) // Red (error)
-            };
-            Text::new(voice_text)
-                .color(TEXT_BG)
-                .mid_top_with_margin_on(ui_widgets.window, indicator_offset)
-                .font_id(self.fonts.cyri.conrod_id)
-                .font_size(self.fonts.cyri.scale(20))
-                .set(self.ids.voice_indicator_bg, ui_widgets);
-            indicator_offset += 30.0;
-            Text::new(voice_text)
-                .color(voice_color)
-                .top_left_with_margins_on(self.ids.voice_indicator_bg, -1.0, -1.0)
-                .font_id(self.fonts.cyri.conrod_id)
-                .font_size(self.fonts.cyri.scale(20))
-                .set(self.ids.voice_indicator_txt, ui_widgets);
         }
 
         // Camera zoom lock
@@ -4878,20 +4890,25 @@ impl Hud {
                 }
             },
             _ => {
-                if !self.show.quest
-                    || self
-                        .current_dialogue
-                        .as_ref()
-                        .is_none_or(|(old_sender, _, _)| *old_sender == sender)
-                {
-                    self.show.quest(true);
-                    self.current_dialogue = Some((sender, Instant::now(), dialogue));
-                }
+                self.show.quest(false);
+                self.current_dialogue = None;
             },
         }
     }
 
     pub fn new_message(&mut self, msg: comp::ChatMsg) { self.new_messages.push_back(msg); }
+
+    pub fn clear_current_dialogue(&mut self) {
+        self.show.quest(false);
+        self.current_dialogue = None;
+    }
+
+    pub fn set_voice_conversation_mode(&mut self, active: bool) {
+        self.voice_conversation_mode = active;
+        if active {
+            self.clear_current_dialogue();
+        }
+    }
 
     pub fn clear_voice_conversation(&mut self) { self.voice_conversation_lines.clear(); }
 
@@ -4900,10 +4917,43 @@ impl Hud {
             VoiceConversationSpeaker::User,
             "User".to_string(),
             text.into(),
+            Instant::now(),
+            Duration::from_secs(VOICE_SUBTITLE_LIFETIME_SECS),
+            false,
         );
     }
 
-    pub fn push_npc_voice_line(&mut self, npc_name: &str, text: impl Into<String>) {
+    pub fn push_npc_voice_preview_line(&mut self, npc_name: &str, text: impl Into<String>) {
+        self.push_npc_voice_line_at(
+            npc_name,
+            text,
+            Instant::now(),
+            Duration::from_secs_f32(VOICE_SUBTITLE_PREVIEW_SECS),
+            true,
+        );
+    }
+
+    pub fn queue_npc_voice_line(
+        &mut self,
+        npc_name: &str,
+        text: impl Into<String>,
+        visible_from: Instant,
+        spoken_duration: Duration,
+    ) {
+        let display_duration = spoken_duration
+            .max(Duration::from_secs_f32(VOICE_SUBTITLE_MIN_SPOKEN_SECS))
+            + Duration::from_secs_f32(VOICE_SUBTITLE_POST_ROLL_SECS);
+        self.push_npc_voice_line_at(npc_name, text, visible_from, display_duration, false);
+    }
+
+    fn push_npc_voice_line_at(
+        &mut self,
+        npc_name: &str,
+        text: impl Into<String>,
+        visible_from: Instant,
+        display_duration: Duration,
+        preview: bool,
+    ) {
         let npc_name = npc_name.trim();
         let speaker_label = if npc_name.is_empty() {
             "NPC".to_string()
@@ -4915,6 +4965,24 @@ impl Hud {
             VoiceConversationSpeaker::Npc,
             speaker_label,
             text.into(),
+            visible_from,
+            display_duration,
+            preview,
+        );
+    }
+
+    pub fn push_voice_system_line(
+        &mut self,
+        speaker_label: impl Into<String>,
+        text: impl Into<String>,
+    ) {
+        self.push_voice_conversation_line(
+            VoiceConversationSpeaker::System,
+            speaker_label.into(),
+            text.into(),
+            Instant::now(),
+            Duration::from_secs(VOICE_SUBTITLE_LIFETIME_SECS),
+            false,
         );
     }
 
@@ -4923,6 +4991,9 @@ impl Hud {
         speaker: VoiceConversationSpeaker,
         speaker_label: String,
         text: String,
+        visible_from: Instant,
+        display_duration: Duration,
+        preview: bool,
     ) {
         let text = text.trim().replace('\n', " ");
         if text.is_empty() {
@@ -4932,11 +5003,30 @@ impl Hud {
         let now = Instant::now();
         self.voice_conversation_lines
             .retain(|line| line.expires_at > now);
+        if let Some(last_line) = self.voice_conversation_lines.back_mut()
+            && last_line.speaker == speaker
+            && last_line.speaker_label == speaker_label
+        {
+            if last_line.text == text
+                || text.starts_with(&last_line.text)
+                || last_line.text.starts_with(&text)
+                || last_line.preview
+                || preview
+            {
+                last_line.text = text;
+                last_line.visible_from = visible_from;
+                last_line.expires_at = visible_from + display_duration;
+                last_line.preview = preview;
+                return;
+            }
+        }
         self.voice_conversation_lines.push_back(VoiceConversationLine {
             speaker,
             speaker_label,
             text,
-            expires_at: now + Duration::from_secs(VOICE_SUBTITLE_LIFETIME_SECS),
+            visible_from,
+            expires_at: visible_from + display_duration,
+            preview,
         });
 
         while self.voice_conversation_lines.len() > 4 {

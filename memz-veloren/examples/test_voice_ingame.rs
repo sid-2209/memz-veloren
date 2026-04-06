@@ -120,12 +120,16 @@ fn main() -> anyhow::Result<()> {
                     VoiceGameEvent::PlayerTranscription(text) => {
                         println!("\n📝 You said: \"{}\"", text);
                     }
-                    VoiceGameEvent::NpcResponseText { text, .. } => {
-                        println!("💬 {} says: \"{}\"", npc.name, text);
+                    VoiceGameEvent::NpcResponsePreview { text, .. } => {
+                        println!("💬 {} preview: \"{}\"", npc.name, text);
                     }
-                    VoiceGameEvent::NpcAudioChunk { audio, .. } => {
-                        println!("🔊 Audio chunk: {} samples ({:.1}s)",
-                            audio.len(), audio.len() as f32 / 24000.0);
+                    VoiceGameEvent::NpcSpokenSegment { text, audio, duration_secs, .. } => {
+                        println!(
+                            "🔊 Spoken segment: \"{}\" ({} samples, {:.2}s)",
+                            text,
+                            audio.len(),
+                            duration_secs
+                        );
                     }
                     VoiceGameEvent::NpcAudioComplete { .. } => {
                         println!("✅ Audio complete!");

@@ -2,16 +2,23 @@ pub mod interactable;
 pub mod settings_change;
 mod target;
 
-use std::{cell::RefCell, collections::HashSet, rc::Rc, result::Result, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{HashSet, VecDeque},
+    rc::Rc,
+    result::Result,
+    time::{Duration, Instant},
+};
 
 use itertools::Itertools;
+use kira::clock::ClockTime;
 #[cfg(not(target_os = "macos"))]
 use mumble_link::SharedLink;
 use ordered_float::OrderedFloat;
 use specs::WorldExt;
 use tracing::{error, info};
 use vek::*;
-use memz_veloren::{VoiceSystem, VelorenNpcData, VoiceGameEvent};
+use memz_veloren::{VoiceDisplayState, VoiceSystem, VelorenNpcData, VoiceGameEvent};
 
 use client::{self, Client};
 use common::{
@@ -23,7 +30,7 @@ use common::{
         invite::InviteKind,
         item::{ItemDesc, tool::ToolKind},
     },
-    consts::MAX_MOUNT_RANGE,
+    consts::{MAX_MOUNT_RANGE, MAX_NPCINTERACT_RANGE},
     event::UpdateCharacterMetadata,
     link::Is,
     mounting::{Mount, VolumePos},
@@ -56,7 +63,7 @@ use crate::{
     window::{AnalogGameInput, Event},
 };
 use hashbrown::HashMap;
-use interactable::{BlockInteraction, EntityInteraction, Interactable, get_interactables};
+use interactable::{BlockInteraction, EntityInteraction, Interactable, Interactables, get_interactables};
 use settings_change::Language::ChangeLanguage;
 use target::targets_under_cursor;
 #[cfg(feature = "egui-ui")]
@@ -80,6 +87,8 @@ use voxygen_egui::EguiDebugInfo;
     is not being detected at a low enough scroll speed).
 */
 const ZOOM_LOCK_SCROLL_DELTA_INTENT: f32 = 14.0;
+const VOICE_DIALOGUE_PREBUFFER_SECS: f32 = 0.7;
+const VOICE_DIALOGUE_CROSSFADE_SECS: f32 = 0.04;
 
 /// The action to perform after a tick
 enum TickAction {
@@ -127,7 +136,25 @@ pub struct SessionState {
     gizmos: Vec<(DebugShapeId, common::resources::Time, bool)>,
     // Voice system for NPC dialogue
     voice_system: Option<VoiceSystem>,
-    active_voice_sfx: Option<crate::audio::SfxHandle>,
+    active_voice_segments: Vec<ActiveVoiceSegment>,
+    queued_voice_segments: VecDeque<QueuedVoiceSegment>,
+    scheduled_voice_end_clock: Option<ClockTime>,
+    scheduled_voice_end_instant: Option<Instant>,
+}
+
+struct ActiveVoiceSegment {
+    handle: crate::audio::SfxHandle,
+    npc_id: u64,
+    fallback_pos: Vec3<f32>,
+}
+
+struct QueuedVoiceSegment {
+    npc_id: u64,
+    npc_name: String,
+    text: String,
+    fallback_pos: Vec3<f32>,
+    audio: Vec<f32>,
+    duration: Duration,
 }
 
 /// Represents an active game session (i.e., the one being played).
@@ -205,7 +232,10 @@ impl SessionState {
             lines: Default::default(),
             gizmos: Vec::new(),
             voice_system: Some(VoiceSystem::new()),
-            active_voice_sfx: None,
+            active_voice_segments: Vec::new(),
+            queued_voice_segments: VecDeque::new(),
+            scheduled_voice_end_clock: None,
+            scheduled_voice_end_instant: None,
         }
     }
 
@@ -213,6 +243,157 @@ impl SessionState {
         self.auto_walk = false;
         self.hud.auto_walk(false);
         self.key_state.auto_walk = false;
+    }
+
+    fn reset_voice_playback(&mut self, global_state: &mut GlobalState) {
+        for segment in self.active_voice_segments.drain(..) {
+            global_state.audio.stop_sfx(&segment.handle);
+        }
+        self.queued_voice_segments.clear();
+        self.scheduled_voice_end_clock = None;
+        self.scheduled_voice_end_instant = None;
+    }
+
+    fn queue_voice_segment(
+        &mut self,
+        npc_id: u64,
+        npc_name: String,
+        text: String,
+        fallback_pos: Vec3<f32>,
+        audio: Vec<f32>,
+        duration: Duration,
+    ) {
+        self.queued_voice_segments.push_back(QueuedVoiceSegment {
+            npc_id,
+            npc_name,
+            text,
+            fallback_pos,
+            audio,
+            duration,
+        });
+    }
+
+    fn voice_playback_active(&self) -> bool {
+        !self.active_voice_segments.is_empty() || !self.queued_voice_segments.is_empty()
+    }
+
+    fn update_voice_playback(&mut self, global_state: &mut GlobalState) {
+        let mut active_segments = Vec::with_capacity(self.active_voice_segments.len());
+        for mut segment in self.active_voice_segments.drain(..) {
+            if let Some(current_pos) = {
+                let client = self.client.borrow();
+                resolve_voice_emitter_position(&client, segment.npc_id)
+            } {
+                segment.fallback_pos = current_pos;
+            }
+            global_state
+                .audio
+                .set_sfx_position(&segment.handle, segment.fallback_pos);
+
+            if !global_state.audio.is_sfx_done(&segment.handle) {
+                active_segments.push(segment);
+            }
+        }
+        self.active_voice_segments = active_segments;
+
+        let now_instant = Instant::now();
+        let clock_now = global_state.audio.get_clock_time();
+        let mut scheduled_end_instant = self
+            .scheduled_voice_end_instant
+            .filter(|end| *end > now_instant)
+            .unwrap_or(now_instant);
+        let mut scheduled_end_clock = clock_now
+            .and_then(|now| self.scheduled_voice_end_clock.filter(|end| *end > now).or(Some(now)));
+
+        loop {
+            let buffered_ahead = scheduled_end_instant
+                .checked_duration_since(now_instant)
+                .map(|duration| duration.as_secs_f32())
+                .unwrap_or(0.0);
+            if !self.active_voice_segments.is_empty() && buffered_ahead >= VOICE_DIALOGUE_PREBUFFER_SECS
+            {
+                break;
+            }
+
+            let Some(segment) = self.queued_voice_segments.pop_front() else {
+                break;
+            };
+
+            let overlap_secs = if self.active_voice_segments.is_empty() {
+                0.0
+            } else {
+                VOICE_DIALOGUE_CROSSFADE_SECS.min(segment.duration.as_secs_f32() * 0.25)
+            };
+            let overlap = Duration::from_secs_f32(overlap_secs);
+            let start_instant = scheduled_end_instant
+                .checked_sub(overlap)
+                .unwrap_or(now_instant)
+                .max(now_instant);
+            let start_clock = scheduled_end_clock.map(|clock| {
+                if let Some(now) = clock_now {
+                    let scheduled_start = clock - overlap_secs as f64;
+                    if scheduled_start > now {
+                        scheduled_start
+                    } else {
+                        now
+                    }
+                } else {
+                    clock
+                }
+            });
+            let emitter_pos = {
+                let client = self.client.borrow();
+                resolve_voice_emitter_position(&client, segment.npc_id).unwrap_or(segment.fallback_pos)
+            };
+            let sample_count = segment.audio.len();
+
+            if let Some(handle) = global_state
+                .audio
+                .emit_voice_audio_at(&segment.audio, emitter_pos, start_clock)
+            {
+                self.active_voice_segments.push(ActiveVoiceSegment {
+                    handle,
+                    npc_id: segment.npc_id,
+                    fallback_pos: emitter_pos,
+                });
+                self.hud.queue_npc_voice_line(
+                    &segment.npc_name,
+                    segment.text,
+                    start_instant,
+                    segment.duration,
+                );
+
+                scheduled_end_instant = start_instant + segment.duration;
+                if let Some(start_clock) = start_clock {
+                    scheduled_end_clock = Some(start_clock + segment.duration.as_secs_f64());
+                }
+                tracing::info!(
+                    "🔊 Scheduled dialogue segment ({} samples, {:.2}s, starts in {:.0}ms)",
+                    sample_count,
+                    segment.duration.as_secs_f32(),
+                    start_instant
+                        .checked_duration_since(now_instant)
+                        .map(|duration| duration.as_millis())
+                        .unwrap_or(0),
+                );
+            } else {
+                tracing::warn!(
+                    "🔇 Voice segment failed to schedule ({} samples) — SFX may be disabled or no channel available",
+                    sample_count,
+                );
+            }
+        }
+
+        self.scheduled_voice_end_instant = if self.voice_playback_active() {
+            Some(scheduled_end_instant)
+        } else {
+            None
+        };
+        self.scheduled_voice_end_clock = if self.voice_playback_active() {
+            scheduled_end_clock
+        } else {
+            None
+        };
     }
 
     /// Possibly lock the camera zoom depending on the current behaviour, and
@@ -393,7 +574,13 @@ impl SessionState {
                     }
                 },
                 client::Event::Dialogue(sender_uid, dialogue) => {
-                    if let Some(sender) = client.state().ecs().entity_from_uid(sender_uid) {
+                    if self
+                        .voice_system
+                        .as_ref()
+                        .is_some_and(|voice_system| voice_system.is_active())
+                    {
+                        self.hud.clear_current_dialogue();
+                    } else if let Some(sender) = client.state().ecs().entity_from_uid(sender_uid) {
                         self.hud.dialogue(sender, pos, dialogue, global_state);
                     }
                 },
@@ -817,39 +1004,12 @@ impl PlayState for SessionState {
                         if input == GameInput::VoiceTalk {
                             if state {
                                 // V key pressed — start voice recording
-                                // Stop any actively playing voice response
-                                if let Some(handle) = self.active_voice_sfx.take() {
-                                    global_state.audio.stop_sfx(&handle);
-                                }
+                                // Interrupt any in-flight NPC voice so the player can cut in cleanly.
+                                self.reset_voice_playback(global_state);
                                 
-                                // Prefer crosshair target; fall back to nearest NPC
-                                // within interaction range (player may not be aiming).
-                                let npc_entity = if let Some(e) = self.target_entity {
-                                    Some(e)
-                                } else {
-                                    // Search for the nearest entity that has an Agent
-                                    // component (i.e. is an NPC, not the player).
+                                let npc_entity = {
                                     let client = self.client.borrow();
-                                    let ecs = client.state().ecs();
-                                    let my_entity = client.entity();
-                                    let positions = ecs.read_storage::<comp::Pos>();
-                                    let agents   = ecs.read_storage::<comp::Agent>();
-                                    let grid     = ecs.read_resource::<CachedSpatialGrid>();
-                                    positions.get(my_entity).map(|p| p.0).and_then(|player_pos| {
-                                        grid.0
-                                            .in_circle_aabr(player_pos.xy(), MAX_MOUNT_RANGE)
-                                            .filter(|e| {
-                                                *e != my_entity
-                                                    && agents.get(*e).is_some()
-                                                    && positions.get(*e).is_some()
-                                            })
-                                            .min_by_key(|e| {
-                                                positions.get(*e)
-                                                    .map(|p| OrderedFloat((p.0 - player_pos).magnitude()))
-                                                    .unwrap_or(OrderedFloat(f32::MAX))
-                                            })
-                                    })
-                                    // borrows dropped here — entity is Copy
+                                    pick_voice_target_npc(&client, &self.interactables, self.target_entity)
                                 };
 
                                 // Extract NPC data from the targeted entity
@@ -959,19 +1119,22 @@ impl PlayState for SessionState {
                                         if let Err(e) = voice_system.start_interaction(&npc_data) {
                                             tracing::error!("Voice start error: {}", e);
                                         } else {
+                                            self.hud.clear_current_dialogue();
                                             self.hud.clear_voice_conversation();
+                                            self.hud.set_voice_conversation_mode(true);
                                             global_state.audio.set_conversation_ducking(true);
                                         }
-                                    }
-                                } else {
-                                    self.hud.new_message(comp::ChatType::Meta.into_plain_msg(
-                                        "🎤 No NPC nearby — walk closer to an NPC, then hold V".to_string(),
-                                    ));
                                 }
                             } else {
-                                // V key released — stop recording
+                                self.hud.push_voice_system_line(
+                                    "Voice",
+                                    "No NPC nearby. Walk closer to an NPC, then hold V.",
+                                );
+                            }
+                        } else {
+                            // V key released — stop recording
                                 if let Some(voice_system) = &mut self.voice_system {
-                                    if voice_system.is_active() {
+                                    if matches!(voice_system.display_state(), VoiceDisplayState::Listening) {
                                         if let Err(e) = voice_system.stop_recording() {
                                             tracing::error!("Voice stop error: {}", e);
                                         }
@@ -1917,41 +2080,37 @@ impl PlayState for SessionState {
                 }
             });
 
-            let inverted_interactable_map = self.interactables.inverted_map();
-
             // ── Voice system: poll events every frame ──────────────
-            if let Some(voice_system) = &mut self.voice_system {
-                // Update HUD visual indicator text based on current state
-                self.hud.voice_display_text = match voice_system.display_state() {
-                    memz_veloren::VoiceDisplayState::Hidden => None,
-                    memz_veloren::VoiceDisplayState::Listening => Some("🎤 Listening... (Release V to send)".to_string()),
-                    memz_veloren::VoiceDisplayState::Processing => Some("⏳ Transcribing speech...".to_string()),
-                    memz_veloren::VoiceDisplayState::Thinking => Some(format!("🤔 NPC is thinking...")),
-                    memz_veloren::VoiceDisplayState::Speaking => Some("🗣️ NPC is speaking".to_string()),
-                    memz_veloren::VoiceDisplayState::Error(msg) => Some(format!("❌ Voice Error: {}", msg)),
-                };
-
+            let mut staged_voice_segments = Vec::new();
+            let show_voice_preview = !self.voice_playback_active();
+            let voice_pipeline_active = if let Some(voice_system) = &mut self.voice_system {
                 for voice_event in voice_system.update() {
                     match voice_event {
                         VoiceGameEvent::PlayerTranscription(text) => {
                             self.hud.push_user_voice_line(text);
                         }
-                        VoiceGameEvent::NpcResponseText { npc_name, text, .. } => {
-                            self.hud.push_npc_voice_line(&npc_name, text);
+                        VoiceGameEvent::NpcResponsePreview { npc_name, text, .. } => {
+                            if show_voice_preview && staged_voice_segments.is_empty() {
+                                self.hud.push_npc_voice_preview_line(&npc_name, text);
+                            }
                         }
-                        VoiceGameEvent::NpcAudioChunk { audio, position, .. } => {
-                            if let Some(handle) = self.active_voice_sfx.take() {
-                                global_state.audio.stop_sfx(&handle);
-                            }
-
-                            let emitter_pos = Vec3::new(position[0], position[1], position[2]);
-                            let sample_count = audio.len();
-                            self.active_voice_sfx = global_state.audio.emit_voice_audio(&audio, emitter_pos);
-                            if self.active_voice_sfx.is_some() {
-                                tracing::info!("🔊 Playing voice audio chunk ({} samples, {:.1}s)", sample_count, sample_count as f32 / 24000.0);
-                            } else {
-                                tracing::warn!("🔇 Voice audio chunk failed to play ({} samples) — SFX may be disabled or no channel available", sample_count);
-                            }
+                        VoiceGameEvent::NpcSpokenSegment {
+                            npc_id,
+                            npc_name,
+                            text,
+                            audio,
+                            duration_secs,
+                            position,
+                            ..
+                        } => {
+                            staged_voice_segments.push((
+                                npc_id,
+                                npc_name,
+                                text,
+                                Vec3::new(position[0], position[1], position[2]),
+                                audio,
+                                Duration::from_secs_f32(duration_secs.max(0.0)),
+                            ));
                         }
                         VoiceGameEvent::NpcAudioComplete { .. } => {
                             tracing::debug!("Voice audio playback complete");
@@ -1960,34 +2119,37 @@ impl PlayState for SessionState {
                             tracing::info!("Voice interaction complete");
                         }
                         VoiceGameEvent::Error(msg) => {
-                            // Show user-facing errors; filter internal pipeline noise
-                            if msg.starts_with("mic_silent:") {
-                                // Microphone silence — show actionable help
+                            if msg.starts_with("speech_unclear:") {
+                                let hint = msg.trim_start_matches("speech_unclear:").trim();
+                                self.hud.push_voice_system_line("Voice", hint);
+                            } else if msg.starts_with("mic_silent:") {
                                 let hint = msg.trim_start_matches("mic_silent:").trim();
-                                self.hud.new_message(comp::ChatType::Meta.into_plain_msg(
-                                    format!("🎤 {}", hint),
-                                ));
+                                self.hud.push_voice_system_line("Voice", hint);
                             } else if !msg.contains("Ollama") && !msg.contains("TTS") {
-                                // Show other user-relevant errors but not internal service errors
-                                self.hud.new_message(comp::ChatType::Meta.into_plain_msg(
-                                    format!("❌ Voice: {}", &msg[..msg.len().min(120)]),
-                                ));
+                                self.hud.push_voice_system_line(
+                                    "Voice",
+                                    format!("Error: {}", &msg[..msg.len().min(120)]),
+                                );
                             } else {
                                 tracing::warn!("Voice pipeline error: {}", msg);
                             }
                         }
                     }
                 }
-
-                global_state
-                    .audio
-                    .set_conversation_ducking(voice_system.is_active());
+                voice_system.is_active()
             } else {
-                self.hud.voice_display_text = None;
-                global_state.audio.set_conversation_ducking(false);
+                false
+            };
+            for (npc_id, npc_name, text, fallback_pos, audio, duration) in staged_voice_segments {
+                self.queue_voice_segment(npc_id, npc_name, text, fallback_pos, audio, duration);
             }
+            self.update_voice_playback(global_state);
+            let conversation_audio_active = voice_pipeline_active || self.voice_playback_active();
+            self.hud.set_voice_conversation_mode(conversation_audio_active);
+            global_state.audio.set_conversation_ducking(conversation_audio_active);
 
             // Extract HUD events ensuring the client borrow gets dropped.
+            let inverted_interactable_map = self.interactables.inverted_map();
             let mut hud_events = self.hud.maintain(
                 &self.client.borrow(),
                 global_state,
@@ -2667,10 +2829,87 @@ impl PlayState for SessionState {
 // Voice NPC helper functions
 // ═══════════════════════════════════════════════════════════════════════
 
+fn resolve_voice_emitter_position(client: &Client, npc_id: u64) -> Option<Vec3<f32>> {
+    let ecs = client.state().ecs();
+    let entity = ecs.entities().entity(npc_id as u32);
+    if !entity.r#gen().is_alive() {
+        return None;
+    }
+
+    let interpolated = ecs.read_storage::<crate::ecs::comp::Interpolated>();
+    if let Some(interp) = interpolated.get(entity) {
+        return Some(interp.pos);
+    }
+
+    let positions = ecs.read_storage::<Pos>();
+    positions.get(entity).map(|pos| pos.0)
+}
+
 /// Infer NPC profession from their display name and body type.
 ///
 /// Veloren NPC names often encode their role (e.g. "Guard", "Merchant").
 /// The body type provides additional hints.
+fn pick_voice_target_npc(
+    client: &Client,
+    interactables: &Interactables,
+    target_entity: Option<specs::Entity>,
+) -> Option<specs::Entity> {
+    let ecs = client.state().ecs();
+    let my_entity = client.entity();
+    let interpolated = ecs.read_storage::<crate::ecs::comp::Interpolated>();
+    let alignments = ecs.read_storage::<comp::Alignment>();
+    let player_pos = interpolated.get(my_entity)?.pos;
+    let relaxed_horizontal_range = (MAX_NPCINTERACT_RANGE + 4.0).max(MAX_NPCINTERACT_RANGE * 1.5);
+    let max_vertical_delta = 6.0f32;
+
+    let is_talkable_npc = |entity: specs::Entity| {
+        entity != my_entity
+            && matches!(alignments.get(entity), Some(comp::Alignment::Npc))
+            && interpolated.get(entity).is_some_and(|interp| {
+                let delta = interp.pos - player_pos;
+                delta.xy().magnitude_squared() <= relaxed_horizontal_range.powi(2)
+                    && delta.z.abs() <= max_vertical_delta
+            })
+    };
+
+    let interactable_candidate = interactables
+        .input_map
+        .values()
+        .filter_map(|(distance_sq, interactable)| match interactable {
+            Interactable::Entity {
+                entity,
+                interaction: EntityInteraction::Talk | EntityInteraction::Trade,
+            } => Some((*entity, *distance_sq)),
+            _ => None,
+        })
+        .min_by_key(|(entity, distance_sq)| {
+            (
+                if Some(*entity) == target_entity { 0 } else { 1 },
+                OrderedFloat(*distance_sq),
+            )
+        })
+        .map(|(entity, _)| entity);
+
+    interactable_candidate
+        .or(target_entity.filter(|entity| is_talkable_npc(*entity)))
+        .filter(|entity| is_talkable_npc(*entity))
+        .or_else(|| {
+            let grid = ecs.read_resource::<CachedSpatialGrid>();
+            grid.0
+                .in_circle_aabr(player_pos.xy(), relaxed_horizontal_range)
+                .filter(|entity| is_talkable_npc(*entity))
+                .min_by_key(|entity| {
+                    interpolated
+                        .get(*entity)
+                        .map(|interp| {
+                            let delta = interp.pos - player_pos;
+                            OrderedFloat(delta.xy().magnitude_squared())
+                        })
+                        .unwrap_or(OrderedFloat(f32::MAX))
+                })
+        })
+}
+
 fn infer_npc_profession(name: &str, body: Option<&comp::Body>) -> String {
     let name_lower = name.to_lowercase();
 

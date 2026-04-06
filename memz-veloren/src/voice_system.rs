@@ -126,22 +126,29 @@ impl VoiceSystem {
             npc.neuroticism,
         );
 
+        pipeline
+            .start_recording(npc.entity_id, npc_context, voice_profile)
+            .map_err(|e| e.to_string())?;
+
         self.active_npc_id = Some(npc.entity_id);
         self.active_npc_name = Some(npc.name.clone());
         self.active_npc_position = Some(npc.position);
         self.last_transcription = None;
         self.last_response = None;
-
-        pipeline
-            .start_recording(npc.entity_id, npc_context, voice_profile)
-            .map_err(|e| e.to_string())?;
-
         self.display_state = VoiceDisplayState::Listening;
         Ok(())
     }
 
     /// Stop recording (player released PTT key).
     pub fn stop_recording(&mut self) -> Result<(), String> {
+        if !matches!(self.display_state, VoiceDisplayState::Listening) {
+            log::debug!(
+                "Ignoring stop_recording() because voice state is {:?}",
+                self.display_state
+            );
+            return Ok(());
+        }
+
         if let Some(pipeline) = &mut self.pipeline {
             pipeline.stop_recording().map_err(|e| e.to_string())?;
             self.display_state = VoiceDisplayState::Processing;
@@ -193,10 +200,10 @@ impl VoiceSystem {
                     self.last_transcription = Some(text.clone());
                     game_events.push(VoiceGameEvent::PlayerTranscription(text));
                 }
-                VoiceEvent::ResponseText(text) => {
-                    log::info!("NPC response: \"{}\"", text);
+                VoiceEvent::ResponsePreview(text) => {
+                    log::info!("NPC response preview: \"{}\"", text);
                     self.last_response = Some(text.clone());
-                    game_events.push(VoiceGameEvent::NpcResponseText {
+                    game_events.push(VoiceGameEvent::NpcResponsePreview {
                         npc_id: self.active_npc_id.unwrap_or(0),
                         npc_name: self
                             .active_npc_name
@@ -205,11 +212,19 @@ impl VoiceSystem {
                         text,
                     });
                 }
-                VoiceEvent::AudioChunk(audio) => {
-                    game_events.push(VoiceGameEvent::NpcAudioChunk {
+                VoiceEvent::SpokenSegment(segment) => {
+                    self.last_response = Some(segment.text.clone());
+                    game_events.push(VoiceGameEvent::NpcSpokenSegment {
                         npc_id: self.active_npc_id.unwrap_or(0),
+                        npc_name: self
+                            .active_npc_name
+                            .clone()
+                            .unwrap_or_else(|| "NPC".to_string()),
                         position: self.active_npc_position.unwrap_or([0.0; 3]),
-                        audio,
+                        text: segment.text,
+                        audio: segment.audio,
+                        duration_secs: segment.duration_secs,
+                        sequence: segment.sequence,
                     });
                 }
                 VoiceEvent::AudioComplete => {
@@ -244,12 +259,20 @@ impl Default for VoiceSystem {
 #[derive(Debug, Clone)]
 pub enum VoiceGameEvent {
     PlayerTranscription(String),
-    NpcResponseText {
+    NpcResponsePreview {
         npc_id: u64,
         npc_name: String,
         text: String,
     },
-    NpcAudioChunk { npc_id: u64, position: [f32; 3], audio: Vec<f32> },
+    NpcSpokenSegment {
+        npc_id: u64,
+        npc_name: String,
+        position: [f32; 3],
+        text: String,
+        audio: Vec<f32>,
+        duration_secs: f32,
+        sequence: u32,
+    },
     NpcAudioComplete { npc_id: u64 },
     InteractionComplete,
     Error(String),
@@ -264,8 +287,14 @@ pub enum VoiceGameEvent {
 /// Searches common locations for the Whisper model. The Blitz TTS server,
 /// optional Kokoro fallback, and Ollama LLM server are expected to run on localhost.
 fn build_pipeline_config() -> VoicePipelineConfig {
-    let whisper_model = find_model_file("whisper-tiny.en.bin");
+    let whisper_model = find_best_whisper_model();
+    let whisper_verifier_model = find_best_whisper_verifier_model(&whisper_model);
     let ollama_url = "http://localhost:11434".to_string();
+    let ollama_model = std::env::var("MEMZ_OLLAMA_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "llama3.2:1b".to_string());
+    let stt_url = std::env::var("MEMZ_STT_URL").unwrap_or_default();
     let blitz_url = "http://localhost:8890".to_string();
     let kokoro_url = "http://localhost:8880".to_string();
 
@@ -278,15 +307,38 @@ fn build_pipeline_config() -> VoicePipelineConfig {
         );
     } else {
         log::info!("STT model: {}", whisper_model);
+        if whisper_model.contains("tiny") {
+            log::info!(
+                "Using whisper-tiny for STT. This matches the repo's edge-first voice SDK plan: \
+                 tiny bundle size, low latency, and safe for in-game distribution."
+            );
+        }
+        if whisper_verifier_model.is_empty() {
+            log::info!(
+                "No stronger local STT verifier model found. Voice input will use the bundled primary model only."
+            );
+        } else {
+            log::info!(
+                "Low-confidence STT transcripts will be verified with: {}",
+                whisper_verifier_model
+            );
+        }
     }
 
     log::info!("LLM endpoint: {}", ollama_url);
+    if stt_url.is_empty() {
+        log::info!("STT backend: local bundled Whisper (HTTP STT disabled by default)");
+    } else {
+        log::info!("Optional HTTP STT endpoint enabled: {}", stt_url);
+    }
     log::info!("Primary TTS endpoint: {} (Blitz TTS)", blitz_url);
     log::info!("Fallback TTS endpoint: {} (Kokoro, optional)", kokoro_url);
 
     VoicePipelineConfig {
         stt: SttConfig {
             model_path: whisper_model,
+            verification_model_path: whisper_verifier_model,
+            server_url: stt_url,
             language: "en".to_string(),
             vad_threshold: 0.1, // Low threshold — PTT fallback handles quiet mics (AirPods etc.)
             use_gpu: true,
@@ -297,18 +349,108 @@ fn build_pipeline_config() -> VoicePipelineConfig {
             kokoro_server_url: kokoro_url,
             sample_rate: 24000,
             default_voice: VoiceProfile::default(),
+            blitz_silence_duration: 0.02,
             allow_macos_say_fallback: false,
         },
         llm: LlmConfig {
             ollama_url,
-            model_name: "llama3.2:3b".to_string(), // 3b: dramatically better dialogue quality
+            model_name: ollama_model,
             temperature: 0.8,
-            max_tokens: 80,  // 1-2 sentences for natural voice pacing
+            max_tokens: 64,  // Keep replies crisp so spoken turns stay responsive.
             seed: None,
             context_size: 4096,
+            keep_alive: "30m".to_string(),
         },
         allow_live_partial_responses: false,
-        stream_response_audio: false,
+        stream_response_audio: true,
+    }
+}
+
+fn find_best_whisper_model() -> String {
+    const CANDIDATES: &[&str] = &[
+        "whisper-tiny.en.bin",
+        "ggml-tiny.en.bin",
+        "whisper-tiny.bin",
+        "ggml-tiny.bin",
+        "whisper-base.en.bin",
+        "ggml-base.en.bin",
+        "whisper-small.en.bin",
+        "ggml-small.en.bin",
+        "whisper-small.bin",
+        "ggml-small.bin",
+    ];
+
+    for candidate in CANDIDATES {
+        let path = find_model_file(candidate);
+        if !path.is_empty() {
+            return path;
+        }
+    }
+
+    String::new()
+}
+
+fn find_best_whisper_verifier_model(primary_model_path: &str) -> String {
+    let env_override = std::env::var("MEMZ_STT_VERIFY_MODEL").unwrap_or_default();
+    if !env_override.trim().is_empty() {
+        let override_path = find_model_file(env_override.trim());
+        if !override_path.is_empty() {
+            return override_path;
+        }
+
+        if std::path::Path::new(env_override.trim()).exists() {
+            if let Ok(abs) = std::fs::canonicalize(env_override.trim()) {
+                return abs.to_string_lossy().to_string();
+            }
+            return env_override;
+        }
+
+        log::warn!(
+            "MEMZ_STT_VERIFY_MODEL was set to '{}' but no matching model file was found.",
+            env_override
+        );
+    }
+
+    let primary_tier = whisper_model_tier(primary_model_path);
+    const CANDIDATES: &[&str] = &[
+        "whisper-small.en.bin",
+        "ggml-small.en.bin",
+        "whisper-small.bin",
+        "ggml-small.bin",
+        "whisper-base.en.bin",
+        "ggml-base.en.bin",
+        "whisper-base.bin",
+        "ggml-base.bin",
+    ];
+
+    for candidate in CANDIDATES {
+        if whisper_model_tier(candidate) <= primary_tier {
+            continue;
+        }
+
+        let path = find_model_file(candidate);
+        if !path.is_empty() {
+            return path;
+        }
+    }
+
+    String::new()
+}
+
+fn whisper_model_tier(model_label: &str) -> u8 {
+    let lower = model_label.to_lowercase();
+    if lower.contains("large") {
+        5
+    } else if lower.contains("medium") {
+        4
+    } else if lower.contains("small") {
+        3
+    } else if lower.contains("base") {
+        2
+    } else if lower.contains("tiny") {
+        1
+    } else {
+        0
     }
 }
 

@@ -34,6 +34,7 @@ use llm::{DialogueLlm, NpcContext};
 use stt::SpeechToText;
 use tts::TextToSpeech;
 use voice_profile::VoiceProfile;
+use std::collections::BTreeMap;
 
 // Re-exports for external consumers
 pub use conversation::Exchange;
@@ -85,14 +86,53 @@ pub enum VoiceEvent {
     StateChanged(VoiceState),
     /// Player's speech was transcribed.
     Transcription(String),
-    /// NPC response text is ready (for dialogue box).
-    ResponseText(String),
-    /// NPC audio chunk is ready (PCM samples, 24kHz mono).
-    AudioChunk(Vec<f32>),
+    /// A low-latency preview of the NPC response text while the model is still generating.
+    ResponsePreview(String),
+    /// A spoken NPC segment that should drive both subtitle timing and audio playback.
+    SpokenSegment(SpokenAudioSegment),
     /// All audio chunks for this response have been sent.
     AudioComplete,
     /// An error occurred.
     Error(String),
+}
+
+/// A spoken NPC response segment aligned to a concrete piece of generated audio.
+#[derive(Debug, Clone)]
+pub struct SpokenAudioSegment {
+    /// Monotonic segment sequence within a single NPC response.
+    pub sequence: u32,
+    /// Text that corresponds to this spoken audio segment.
+    pub text: String,
+    /// PCM samples at 24kHz mono.
+    pub audio: Vec<f32>,
+    /// Duration of the audio in seconds.
+    pub duration_secs: f32,
+}
+
+#[derive(Debug)]
+enum TtsWorkerCommand {
+    Synthesize {
+        generation_id: u64,
+        sequence: u32,
+        text: String,
+        voice: VoiceProfile,
+    },
+}
+
+#[derive(Debug)]
+enum TtsWorkerResult {
+    SegmentReady {
+        generation_id: u64,
+        sequence: u32,
+        text: String,
+        audio: Vec<f32>,
+        duration_secs: f32,
+    },
+    SegmentFailed {
+        generation_id: u64,
+        sequence: u32,
+        error: String,
+    },
 }
 
 /// Configuration for the complete voice pipeline.
@@ -183,27 +223,41 @@ impl VoicePipeline {
         npc_context: NpcContext,
         voice_profile: VoiceProfile,
     ) -> Result<()> {
+        if self.current_state != VoiceState::Idle {
+            return Ok(());
+        }
+
         self.command_tx
             .send(VoiceCommand::StartRecording {
                 npc_id,
                 npc_context,
                 voice_profile,
             })
-            .map_err(|e| VoiceError::ChannelError(e.to_string()))
+            .map_err(|e| VoiceError::ChannelError(e.to_string()))?;
+        self.current_state = VoiceState::Listening;
+        Ok(())
     }
 
     /// Stop recording (player released PTT).
     pub fn stop_recording(&mut self) -> Result<()> {
+        if self.current_state != VoiceState::Listening {
+            return Ok(());
+        }
+
         self.command_tx
             .send(VoiceCommand::StopRecording)
-            .map_err(|e| VoiceError::ChannelError(e.to_string()))
+            .map_err(|e| VoiceError::ChannelError(e.to_string()))?;
+        self.current_state = VoiceState::Transcribing;
+        Ok(())
     }
 
     /// Cancel the current interaction.
     pub fn cancel(&mut self) -> Result<()> {
         self.command_tx
             .send(VoiceCommand::Cancel)
-            .map_err(|e| VoiceError::ChannelError(e.to_string()))
+            .map_err(|e| VoiceError::ChannelError(e.to_string()))?;
+        self.current_state = VoiceState::Idle;
+        Ok(())
     }
 
     /// Poll for events from the voice pipeline.
@@ -270,13 +324,20 @@ fn run_pipeline_thread(
             return Err(e);
         }
     };
-    let mut tts = TextToSpeech::new(config.tts)?;
+    let tts = TextToSpeech::new(config.tts.clone())?;
     let mut llm = DialogueLlm::new(config.llm)?;
     let mut conversations = ConversationRegistry::default();
+    let (tts_request_tx, tts_request_rx) = crossbeam_channel::unbounded();
+    let (tts_result_tx, tts_result_rx) = crossbeam_channel::unbounded();
+    let _tts_thread = std::thread::Builder::new()
+        .name("voice-tts-worker".to_string())
+        .spawn(move || run_tts_worker_loop(tts, tts_request_rx, tts_result_tx))
+        .map_err(|e| VoiceError::PipelineError(format!("Failed to spawn TTS worker: {}", e)))?;
 
     let mut current_npc_id: Option<u64> = None;
     let mut current_context: Option<NpcContext> = None;
     let mut current_voice: Option<VoiceProfile> = None;
+    let mut response_generation: u64 = 0;
 
     loop {
         // Wait for next command, or timeout to poll STT
@@ -320,16 +381,27 @@ fn run_pipeline_thread(
                 }
 
                 VoiceCommand::StopRecording => {
+                    if !stt.is_recording() {
+                        log::warn!(
+                            "Ignoring stop-recording request because the microphone is not recording"
+                        );
+                        let _ = event_tx.send(VoiceEvent::StateChanged(VoiceState::Idle));
+                        continue;
+                    }
+
                     let _ = event_tx.send(VoiceEvent::StateChanged(VoiceState::Transcribing));
 
                     // STT: Transcribe the final recorded audio
                     match stt.stop_and_transcribe() {
                         Ok(text) if text.is_empty() => {
-                            // Mic is silent or permission denied — tell the user clearly
-                            log::warn!("No speech detected — mic may be silent (AirPods A2DP mode?) or permission denied");
+                            // We received no usable transcript. This may be brief speech,
+                            // quiet capture, unclear pronunciation, or a genuine mic issue.
+                            log::warn!(
+                                "No clear speech could be transcribed from the captured audio"
+                            );
                             let _ = event_tx.send(VoiceEvent::Error(
-                                "mic_silent: Couldn't hear you. On macOS, check System Settings → Privacy & Security → Microphone. \
-                                 If using AirPods, try speaking again or switch to Built-in Microphone.".to_string()
+                                "speech_unclear: I couldn't make out clear speech. Hold V while speaking, then release. \
+                                 If this keeps happening, check microphone privacy and raise the input volume.".to_string()
                             ));
                             let _ = event_tx.send(VoiceEvent::StateChanged(VoiceState::Idle));
                         }
@@ -342,20 +414,24 @@ fn run_pipeline_thread(
                             {
                                 let history = conversations.get(npc_id);
                                 let voice = current_voice.as_ref().cloned().unwrap_or_default();
+                                response_generation = response_generation.wrapping_add(1);
 
-                                match llm.generate_response(npc_ctx, &text, history) {
+                                match generate_response_and_audio(
+                                    &mut llm,
+                                    &event_tx,
+                                    &tts_request_tx,
+                                    &tts_result_rx,
+                                    response_generation,
+                                    npc_ctx,
+                                    &text,
+                                    history,
+                                    &voice,
+                                    config.stream_response_audio,
+                                ) {
                                     Ok(response) => {
                                         conversations
                                             .get_or_create(npc_id)
                                             .add_exchange(text.clone(), response.clone());
-                                        let _ = event_tx.send(VoiceEvent::ResponseText(response.clone()));
-                                        emit_response_audio(
-                                            &mut tts,
-                                            &event_tx,
-                                            &response,
-                                            &voice,
-                                            config.stream_response_audio,
-                                        );
                                     }
                                     Err(e) => {
                                         log::error!("LLM generation failed: {}", e);
@@ -405,21 +481,25 @@ fn run_pipeline_thread(
                     if let (Some(ref npc_ctx), Some(npc_id)) = (&current_context, current_npc_id) {
                         let history = conversations.get(npc_id);
 
-                        match llm.generate_response(npc_ctx, &text, history) {
+                        let voice = current_voice.as_ref().cloned().unwrap_or_default();
+                        response_generation = response_generation.wrapping_add(1);
+
+                        match generate_response_and_audio(
+                            &mut llm,
+                            &event_tx,
+                            &tts_request_tx,
+                            &tts_result_rx,
+                            response_generation,
+                            npc_ctx,
+                            &text,
+                            history,
+                            &voice,
+                            config.stream_response_audio,
+                        ) {
                             Ok(response) => {
                                 conversations
                                     .get_or_create(npc_id)
                                     .add_exchange(text, response.clone());
-
-                                let _ = event_tx.send(VoiceEvent::ResponseText(response.clone()));
-                                let voice = current_voice.as_ref().cloned().unwrap_or_default();
-                                emit_response_audio(
-                                    &mut tts,
-                                    &event_tx,
-                                    &response,
-                                    &voice,
-                                    config.stream_response_audio,
-                                );
                             }
                             Err(e) => {
                                 log::error!("LLM generation failed: {}", e);
@@ -446,33 +526,37 @@ fn run_pipeline_thread(
 }
 
 fn emit_response_audio(
-    tts: &mut TextToSpeech,
     event_tx: &Sender<VoiceEvent>,
+    tts_request_tx: &Sender<TtsWorkerCommand>,
+    tts_result_rx: &Receiver<TtsWorkerResult>,
+    generation_id: u64,
     response: &str,
     voice: &VoiceProfile,
-    stream_response_audio: bool,
 ) {
-    let _ = event_tx.send(VoiceEvent::StateChanged(VoiceState::Synthesizing));
+    let sequence = 0;
+    if let Err(err) = queue_tts_segment(
+        tts_request_tx,
+        generation_id,
+        sequence,
+        response.to_string(),
+        voice.clone(),
+        event_tx,
+    ) {
+        log::error!("TTS synthesis failed: {}", err);
+        let _ = event_tx.send(VoiceEvent::Error(err.to_string()));
+        return;
+    }
 
-    let result = if stream_response_audio {
-        let event_tx_clone = event_tx.clone();
-        tts.synthesize_streaming(response, voice, |audio_chunk| {
-            let _ = event_tx_clone.send(VoiceEvent::StateChanged(VoiceState::Speaking));
-            let _ = event_tx_clone.send(VoiceEvent::AudioChunk(audio_chunk));
-            true
-        })
-    } else {
-        match tts.synthesize(response, voice) {
-            Ok(audio) => {
-                let _ = event_tx.send(VoiceEvent::StateChanged(VoiceState::Speaking));
-                let _ = event_tx.send(VoiceEvent::AudioChunk(audio));
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    };
-
-    match result {
+    let mut pending_segments = BTreeMap::new();
+    let mut next_sequence_to_emit = 0;
+    match wait_for_tts_results(
+        tts_result_rx,
+        generation_id,
+        1,
+        &mut pending_segments,
+        &mut next_sequence_to_emit,
+        event_tx,
+    ) {
         Ok(()) => {
             let _ = event_tx.send(VoiceEvent::AudioComplete);
         }
@@ -481,6 +565,381 @@ fn emit_response_audio(
             let _ = event_tx.send(VoiceEvent::Error(e.to_string()));
         }
     }
+}
+
+fn generate_response_and_audio(
+    llm: &mut DialogueLlm,
+    event_tx: &Sender<VoiceEvent>,
+    tts_request_tx: &Sender<TtsWorkerCommand>,
+    tts_result_rx: &Receiver<TtsWorkerResult>,
+    generation_id: u64,
+    npc_context: &NpcContext,
+    player_text: &str,
+    history: Option<&conversation::ConversationHistory>,
+    voice: &VoiceProfile,
+    stream_response_audio: bool,
+) -> Result<String> {
+    if stream_response_audio {
+        generate_streamed_response_and_audio(
+            llm,
+            event_tx,
+            tts_request_tx,
+            tts_result_rx,
+            generation_id,
+            npc_context,
+            player_text,
+            history,
+            voice,
+        )
+    } else {
+        let response = llm.generate_response(npc_context, player_text, history)?;
+        let _ = event_tx.send(VoiceEvent::ResponsePreview(response.clone()));
+        emit_response_audio(
+            event_tx,
+            tts_request_tx,
+            tts_result_rx,
+            generation_id,
+            &response,
+            voice,
+        );
+        Ok(response)
+    }
+}
+
+fn generate_streamed_response_and_audio(
+    llm: &mut DialogueLlm,
+    event_tx: &Sender<VoiceEvent>,
+    tts_request_tx: &Sender<TtsWorkerCommand>,
+    tts_result_rx: &Receiver<TtsWorkerResult>,
+    generation_id: u64,
+    npc_context: &NpcContext,
+    player_text: &str,
+    history: Option<&conversation::ConversationHistory>,
+    voice: &VoiceProfile,
+) -> Result<String> {
+    let mut emitted_bytes = 0usize;
+    let mut last_emitted_text = String::new();
+    let mut tts_error: Option<VoiceError> = None;
+    let mut pending_segments = BTreeMap::new();
+    let mut next_sequence_to_queue = 0u32;
+    let mut next_sequence_to_emit = 0u32;
+    let mut outstanding_segments = 0usize;
+
+    let response = llm.generate_response_streaming(npc_context, player_text, history, |partial| {
+        let partial = partial.trim();
+        if partial.is_empty() {
+            return true;
+        }
+
+        let Some(new_text) = partial.get(emitted_bytes..) else {
+            return true;
+        };
+        let (ready_segments, consumed_bytes) = drain_ready_segments(new_text);
+        if last_emitted_text != partial {
+            let _ = event_tx.send(VoiceEvent::ResponsePreview(partial.to_string()));
+            last_emitted_text.clear();
+            last_emitted_text.push_str(partial);
+        }
+
+        if ready_segments.is_empty() {
+            if let Err(err) = drain_ready_tts_results(
+                tts_result_rx,
+                generation_id,
+                &mut pending_segments,
+                &mut next_sequence_to_emit,
+                event_tx,
+            ) {
+                tts_error = Some(err);
+                return false;
+            }
+            return true;
+        }
+
+        emitted_bytes += consumed_bytes;
+
+        for segment_text in ready_segments {
+            if let Err(err) = queue_tts_segment(
+                tts_request_tx,
+                generation_id,
+                next_sequence_to_queue,
+                segment_text,
+                voice.clone(),
+                event_tx,
+            ) {
+                tts_error = Some(err);
+                return false;
+            }
+            next_sequence_to_queue = next_sequence_to_queue.saturating_add(1);
+            outstanding_segments += 1;
+        }
+
+        if let Err(err) = drain_ready_tts_results(
+            tts_result_rx,
+            generation_id,
+            &mut pending_segments,
+            &mut next_sequence_to_emit,
+            event_tx,
+        ) {
+            tts_error = Some(err);
+            return false;
+        }
+
+        true
+    })?;
+
+    if let Some(err) = tts_error {
+        return Err(err);
+    }
+
+    let response = response.trim().to_string();
+    if !response.is_empty() && last_emitted_text != response {
+        let _ = event_tx.send(VoiceEvent::ResponsePreview(response.clone()));
+    }
+
+    if let Some(remaining) = response.get(emitted_bytes..) {
+        let remaining = remaining.trim();
+        if !remaining.is_empty() {
+            queue_tts_segment(
+                tts_request_tx,
+                generation_id,
+                next_sequence_to_queue,
+                remaining.to_string(),
+                voice.clone(),
+                event_tx,
+            )?;
+            outstanding_segments += 1;
+        }
+    }
+
+    wait_for_tts_results(
+        tts_result_rx,
+        generation_id,
+        outstanding_segments,
+        &mut pending_segments,
+        &mut next_sequence_to_emit,
+        event_tx,
+    )?;
+    let _ = event_tx.send(VoiceEvent::AudioComplete);
+    Ok(response)
+}
+
+fn queue_tts_segment(
+    tts_request_tx: &Sender<TtsWorkerCommand>,
+    generation_id: u64,
+    sequence: u32,
+    text: String,
+    voice: VoiceProfile,
+    event_tx: &Sender<VoiceEvent>,
+) -> Result<()> {
+    let _ = event_tx.send(VoiceEvent::StateChanged(VoiceState::Synthesizing));
+    tts_request_tx
+        .send(TtsWorkerCommand::Synthesize {
+            generation_id,
+            sequence,
+            text,
+            voice,
+        })
+        .map_err(|e| VoiceError::ChannelError(e.to_string()))?;
+    Ok(())
+}
+
+fn run_tts_worker_loop(
+    mut tts: TextToSpeech,
+    request_rx: Receiver<TtsWorkerCommand>,
+    result_tx: Sender<TtsWorkerResult>,
+) {
+    while let Ok(command) = request_rx.recv() {
+        match command {
+            TtsWorkerCommand::Synthesize {
+                generation_id,
+                sequence,
+                text,
+                voice,
+            } => match tts.synthesize(&text, &voice) {
+                Ok(audio) => {
+                    let duration_secs = audio.len() as f32 / tts.sample_rate() as f32;
+                    if result_tx
+                        .send(TtsWorkerResult::SegmentReady {
+                            generation_id,
+                            sequence,
+                            text,
+                            audio,
+                            duration_secs,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    if result_tx
+                        .send(TtsWorkerResult::SegmentFailed {
+                            generation_id,
+                            sequence,
+                            error: err.to_string(),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            },
+        }
+    }
+}
+
+fn drain_ready_tts_results(
+    tts_result_rx: &Receiver<TtsWorkerResult>,
+    generation_id: u64,
+    pending_segments: &mut BTreeMap<u32, SpokenAudioSegment>,
+    next_sequence_to_emit: &mut u32,
+    event_tx: &Sender<VoiceEvent>,
+) -> Result<()> {
+    loop {
+        match tts_result_rx.try_recv() {
+            Ok(result) => {
+                handle_tts_result(
+                    result,
+                    generation_id,
+                    pending_segments,
+                    next_sequence_to_emit,
+                    event_tx,
+                )?;
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => break,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                return Err(VoiceError::ChannelError(
+                    "TTS worker disconnected unexpectedly".to_string(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn wait_for_tts_results(
+    tts_result_rx: &Receiver<TtsWorkerResult>,
+    generation_id: u64,
+    expected_segments: usize,
+    pending_segments: &mut BTreeMap<u32, SpokenAudioSegment>,
+    next_sequence_to_emit: &mut u32,
+    event_tx: &Sender<VoiceEvent>,
+) -> Result<()> {
+    while (*next_sequence_to_emit as usize) < expected_segments {
+        let result = tts_result_rx
+            .recv()
+            .map_err(|e| VoiceError::ChannelError(e.to_string()))?;
+        handle_tts_result(
+            result,
+            generation_id,
+            pending_segments,
+            next_sequence_to_emit,
+            event_tx,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn handle_tts_result(
+    result: TtsWorkerResult,
+    generation_id: u64,
+    pending_segments: &mut BTreeMap<u32, SpokenAudioSegment>,
+    next_sequence_to_emit: &mut u32,
+    event_tx: &Sender<VoiceEvent>,
+) -> Result<()> {
+    match result {
+        TtsWorkerResult::SegmentReady {
+            generation_id: result_generation,
+            sequence,
+            text,
+            audio,
+            duration_secs,
+        } => {
+            if result_generation != generation_id {
+                return Ok(());
+            }
+            pending_segments.insert(
+                sequence,
+                SpokenAudioSegment {
+                    sequence,
+                    text,
+                    audio,
+                    duration_secs,
+                },
+            );
+            emit_ready_spoken_segments(pending_segments, next_sequence_to_emit, event_tx);
+            Ok(())
+        }
+        TtsWorkerResult::SegmentFailed {
+            generation_id: result_generation,
+            sequence,
+            error,
+        } => {
+            if result_generation != generation_id {
+                return Ok(());
+            }
+            Err(VoiceError::TtsError(format!(
+                "Failed to synthesize segment {}: {}",
+                sequence, error
+            )))
+        }
+    }
+}
+
+fn emit_ready_spoken_segments(
+    pending_segments: &mut BTreeMap<u32, SpokenAudioSegment>,
+    next_sequence_to_emit: &mut u32,
+    event_tx: &Sender<VoiceEvent>,
+) {
+    while let Some(segment) = pending_segments.remove(next_sequence_to_emit) {
+        let _ = event_tx.send(VoiceEvent::StateChanged(VoiceState::Speaking));
+        let _ = event_tx.send(VoiceEvent::SpokenSegment(segment));
+        *next_sequence_to_emit = next_sequence_to_emit.saturating_add(1);
+    }
+}
+
+fn drain_ready_segments(text: &str) -> (Vec<String>, usize) {
+    const MIN_SOFT_BREAK_CHARS: usize = 48;
+    const MAX_SEGMENT_CHARS: usize = 140;
+
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    let mut consumed = 0usize;
+    let mut chars_in_segment = 0usize;
+    let mut last_whitespace_end = None;
+
+    for (i, ch) in text.char_indices() {
+        chars_in_segment += 1;
+        if ch.is_whitespace() {
+            last_whitespace_end = Some(i + ch.len_utf8());
+        }
+
+        let hard_break = matches!(ch, '.' | '!' | '?');
+        let soft_break = matches!(ch, ',' | ';' | ':') && chars_in_segment >= MIN_SOFT_BREAK_CHARS;
+        let forced_break = chars_in_segment >= MAX_SEGMENT_CHARS && last_whitespace_end.is_some();
+
+        if !(hard_break || soft_break || forced_break) {
+            continue;
+        }
+
+        let end = if forced_break {
+            last_whitespace_end.unwrap_or(i + ch.len_utf8())
+        } else {
+            i + ch.len_utf8()
+        };
+        let segment = text[start..end].trim();
+        if !segment.is_empty() {
+            segments.push(segment.to_string());
+        }
+        start = end;
+        consumed = end;
+        chars_in_segment = 0;
+        last_whitespace_end = None;
+    }
+
+    (segments, consumed)
 }
 
 #[cfg(test)]
@@ -524,5 +983,29 @@ mod tests {
         let ctx = history.to_context_string();
         assert!(ctx.contains("Hello!"));
         assert!(ctx.contains("Thorin"));
+    }
+
+    #[test]
+    fn test_drain_ready_segments_keeps_partial_tail() {
+        let (segments, consumed) = drain_ready_segments("Hello traveler. What brings you here");
+
+        assert_eq!(segments, vec!["Hello traveler.".to_string()]);
+        assert_eq!(consumed, "Hello traveler.".len());
+    }
+
+    #[test]
+    fn test_drain_ready_segments_uses_soft_breaks_for_long_clauses() {
+        let text =
+            "The old mill by the eastern bridge broke again at dawn, and we still have grain waiting for tomorrow";
+        let (segments, consumed) = drain_ready_segments(text);
+
+        assert_eq!(
+            segments,
+            vec!["The old mill by the eastern bridge broke again at dawn,".to_string()]
+        );
+        assert_eq!(
+            consumed,
+            "The old mill by the eastern bridge broke again at dawn,".len()
+        );
     }
 }

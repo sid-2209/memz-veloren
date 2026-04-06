@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip3 --version)",
+      "Bash(pip3 install:*)",
+      "Read(//opt/homebrew/bin/**)",
+      "Read(//usr/local/bin/**)",
+      "Bash(brew list:*)",
+      "Bash(pip3.11 install:*)",
+      "Bash(cargo build:*)",
+      "WebFetch(domain:obsproject.com)",
+      "WebFetch(domain:screen.studio)",
+      "WebSearch"
+    ]
+  }
+}
